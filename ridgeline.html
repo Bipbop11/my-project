@@ -50,6 +50,7 @@
     align-items: flex-start;
     gap: 16px;
     pointer-events: none;
+    text-shadow: 0 1px 10px rgba(20, 24, 50, 0.45);
   }
   .hud-right { display: flex; align-items: center; gap: 14px; }
   .dist {
@@ -376,7 +377,6 @@ const $ = (id) => document.getElementById(id);
 const cv = $('game');
 const ctx = cv.getContext('2d');
 let W = 0, H = 0, dpr = 1, baseScale = 1, scale = 1, viewW = 0, viewH = 0;
-let skyGrad = null, hazeGrad = null;
 
 function measure() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -387,13 +387,6 @@ function measure() {
   // Fit roughly 900 x 620 world units, but never zoom out so far that phones get a tiny rider
   baseScale = Math.max(Math.min(H / 620, W / 900), Math.min(H / 620, 0.62));
   applyZoom();
-  skyGrad = ctx.createLinearGradient(0, 0, 0, H);
-  skyGrad.addColorStop(0, C.skyTop);
-  skyGrad.addColorStop(0.45, C.skyMid);
-  skyGrad.addColorStop(0.8, C.skyLow);
-  hazeGrad = ctx.createLinearGradient(0, H * 0.5, 0, H * 0.8);
-  hazeGrad.addColorStop(0, 'rgba(242, 165, 138, 0)');
-  hazeGrad.addColorStop(1, C.haze);
 }
 function applyZoom() {
   scale = baseScale * cam.zoom;
@@ -805,7 +798,7 @@ function emit(x, y, vx, vy, life, r, color) {
 function spray(th) {
   const tx = p.x - Math.cos(p.angle) * 18;
   const ty = p.y - Math.sin(p.angle) * 18;
-  const color = p.boost > 0 ? C.boost : C.spray;
+  const color = p.boost > 0 ? C.boost : css(mixColor(L.snow, [255, 255, 255], 0.5));
   emit(tx, ty, -p.v * 0.12 * Math.cos(th) + (Math.random() - 0.5) * 60,
        -100 - Math.random() * 140, 0.45 + Math.random() * 0.3, 2 + Math.random() * 2.5, color);
 }
@@ -813,7 +806,7 @@ function burst(n, power) {
   for (let i = 0; i < n; i++) {
     const a = -Math.PI * Math.random();
     const s = (80 + Math.random() * 220) * power;
-    emit(p.x, p.y, Math.cos(a) * s, Math.sin(a) * s, 0.4 + Math.random() * 0.5, 2 + Math.random() * 3, C.spray);
+    emit(p.x, p.y, Math.cos(a) * s, Math.sin(a) * s, 0.4 + Math.random() * 0.5, 2 + Math.random() * 3, css(mixColor(L.snow, [255, 255, 255], 0.5)));
   }
 }
 function stepParticles(dt) {
@@ -1044,6 +1037,7 @@ function stepEntities(dt) {
 // ---------- Main update (fixed timestep) ----------
 function update(dt) {
   time += dt;
+  dayTime = (dayTime + dt / DAY_LENGTH) % 1;
   if (input.down) input.age += dt;
 
   // Remember the previous state so rendering can interpolate between steps
@@ -1108,6 +1102,196 @@ function showGameOver() {
   $('panel').hidden = false;
 }
 
+// ---------- Day/night cycle ----------
+// dayTime runs from 0 to 1 and wraps. Each key holds a full palette; the live palette L
+// is a smoothstep blend of the two keys around the current time.
+const DAY_LENGTH = 160;      // seconds for one full day
+const SUN_RISE = 0.17, SUN_SET = 0.81;
+const MOON_RISE = 0.77, MOON_SPAN = 0.46;
+let dayTime = 0.24;          // start in the morning
+
+// Colors are [r, g, b] or [r, g, b, a]; numbers blend linearly
+const PALETTES = {
+  night: {
+    skyTop: [10, 14, 34], skyMid: [24, 30, 68], skyLow: [48, 56, 102],
+    far: [46, 52, 94], mid: [36, 42, 80], near: [26, 31, 62], cap: [150, 162, 204],
+    haze: [58, 68, 118, 0.3], snow: [170, 180, 216], rim: [152, 162, 202],
+    shade1: [130, 140, 184], shade2: [104, 114, 162], tree: [18, 22, 46],
+    light: [190, 206, 255], stars: 1
+  },
+  dawn: {
+    skyTop: [62, 74, 138], skyMid: [214, 140, 160], skyLow: [255, 196, 150],
+    far: [172, 142, 178], mid: [134, 110, 152], near: [92, 78, 124], cap: [255, 230, 222],
+    haze: [255, 190, 160, 0.32], snow: [250, 238, 238], rim: [238, 222, 228],
+    shade1: [216, 202, 218], shade2: [186, 172, 202], tree: [58, 52, 92],
+    light: [255, 202, 160], stars: 0.1
+  },
+  day: {
+    skyTop: [58, 124, 206], skyMid: [128, 184, 234], skyLow: [208, 232, 248],
+    far: [152, 178, 216], mid: [114, 142, 192], near: [78, 104, 158], cap: [250, 252, 255],
+    haze: [222, 238, 250, 0.38], snow: [246, 249, 255], rim: [228, 236, 248],
+    shade1: [206, 218, 238], shade2: [178, 194, 224], tree: [42, 68, 96],
+    light: [255, 250, 236], stars: 0
+  },
+  dusk: {
+    skyTop: [39, 49, 92], skyMid: [140, 111, 159], skyLow: [242, 165, 138],
+    far: [154, 139, 187], mid: [124, 108, 165], near: [97, 90, 146], cap: [255, 222, 210],
+    haze: [242, 165, 138, 0.3], snow: [238, 240, 248], rim: [228, 230, 243],
+    shade1: [214, 217, 236], shade2: [193, 196, 222], tree: [58, 63, 107],
+    light: [255, 190, 150], stars: 0.15
+  }
+};
+const DAY_KEYS = [
+  [0, 'night'], [0.14, 'night'], [0.22, 'dawn'], [0.32, 'day'],
+  [0.62, 'day'], [0.74, 'dusk'], [0.84, 'night'], [1, 'night']
+];
+
+const L = {};                // live, blended palette
+let lightDirX = 0;           // -1 when the light source is at the far left, 1 at the far right
+let lightPower = 1;          // 0 in deep night, 1 at noon
+let sunPos = null, moonPos = null;
+
+const stars = [];
+for (let i = 0; i < 160; i++) {
+  stars.push({
+    x: Math.random(), y: Math.random() * 0.6, r: 0.5 + Math.random() * 1.1,
+    ph: Math.random() * TAU, sp: 1 + Math.random() * 3, b: 0.4 + Math.random() * 0.6
+  });
+}
+
+function smoothstep(t) { return t * t * (3 - 2 * t); }
+function css(c, alphaMul) {
+  const a = (c.length > 3 ? c[3] : 1) * (alphaMul === undefined ? 1 : alphaMul);
+  return 'rgba(' + (c[0] | 0) + ', ' + (c[1] | 0) + ', ' + (c[2] | 0) + ', ' + a.toFixed(3) + ')';
+}
+function mixColor(a, b, k) {
+  const out = [];
+  for (let i = 0; i < a.length; i++) out.push(a[i] + (b[i] - a[i]) * k);
+  return out;
+}
+
+function updateLighting() {
+  const t = dayTime;
+  let i = 0;
+  while (i < DAY_KEYS.length - 2 && t >= DAY_KEYS[i + 1][0]) i++;
+  const ta = DAY_KEYS[i][0], tb = DAY_KEYS[i + 1][0];
+  const A = PALETTES[DAY_KEYS[i][1]], B = PALETTES[DAY_KEYS[i + 1][1]];
+  const k = smoothstep(clamp((t - ta) / (tb - ta), 0, 1));
+  for (const key in A) {
+    L[key] = Array.isArray(A[key]) ? mixColor(A[key], B[key], k) : lerp(A[key], B[key], k);
+  }
+
+  // Sun and moon travel along arcs that rise from and set behind the far mountains
+  const horizon = H * 0.62;
+  const s = (t - SUN_RISE) / (SUN_SET - SUN_RISE);
+  sunPos = s > 0 && s < 1 ? { x: W * (0.08 + 0.84 * s), y: horizon - Math.sin(s * Math.PI) * H * 0.5 } : null;
+  const m = (((t - MOON_RISE) % 1) + 1) % 1 / MOON_SPAN;
+  moonPos = m < 1 ? { x: W * (0.08 + 0.84 * m), y: horizon - Math.sin(m * Math.PI) * H * 0.45 } : null;
+
+  if (sunPos) {
+    lightDirX = (s - 0.5) * 2;
+    lightPower = Math.sin(s * Math.PI);
+  } else if (moonPos) {
+    lightDirX = (m - 0.5) * 2;
+    lightPower = 0.4 * Math.sin(m * Math.PI);
+  } else {
+    lightDirX = 0;
+    lightPower = 0;
+  }
+}
+
+function drawSky(camX) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, css(L.skyTop));
+  g.addColorStop(0.5, css(L.skyMid));
+  g.addColorStop(0.82, css(L.skyLow));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars fade in with night and twinkle; they drift very slightly with the camera
+  if (L.stars > 0.01) {
+    ctx.fillStyle = '#ffffff';
+    const drift = camX * scale * 0.01;
+    for (const st of stars) {
+      const tw = 0.6 + 0.4 * Math.sin(time * st.sp + st.ph);
+      ctx.globalAlpha = L.stars * tw * st.b;
+      const x = ((st.x * W - drift) % W + W) % W;
+      ctx.fillRect(x, st.y * H, st.r, st.r);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  const unit = Math.min(W, H);
+  if (sunPos) {
+    const glow = ctx.createRadialGradient(sunPos.x, sunPos.y, 0, sunPos.x, sunPos.y, unit * 0.4);
+    glow.addColorStop(0, css(L.light, 0.45));
+    glow.addColorStop(1, css(L.light, 0));
+    ctx.fillStyle = glow;
+    ctx.fillRect(sunPos.x - unit * 0.4, sunPos.y - unit * 0.4, unit * 0.8, unit * 0.8);
+    ctx.fillStyle = css(mixColor(L.light, [255, 255, 255], 0.55));
+    ctx.beginPath();
+    ctx.arc(sunPos.x, sunPos.y, unit * 0.055, 0, TAU);
+    ctx.fill();
+  }
+  if (moonPos) {
+    const r = unit * 0.04;
+    const glow = ctx.createRadialGradient(moonPos.x, moonPos.y, r, moonPos.x, moonPos.y, r * 5);
+    glow.addColorStop(0, 'rgba(200, 214, 255, 0.22)');
+    glow.addColorStop(1, 'rgba(200, 214, 255, 0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(moonPos.x - r * 5, moonPos.y - r * 5, r * 10, r * 10);
+    ctx.fillStyle = '#eef1fb';
+    ctx.beginPath();
+    ctx.arc(moonPos.x, moonPos.y, r, 0, TAU);
+    ctx.fill();
+    // Craters
+    ctx.fillStyle = 'rgba(160, 170, 205, 0.45)';
+    ctx.beginPath();
+    ctx.arc(moonPos.x - r * 0.3, moonPos.y - r * 0.2, r * 0.22, 0, TAU);
+    ctx.moveTo(moonPos.x + r * 0.45, moonPos.y + r * 0.25);
+    ctx.arc(moonPos.x + r * 0.3, moonPos.y + r * 0.25, r * 0.15, 0, TAU);
+    ctx.moveTo(moonPos.x + r * 0.1, moonPos.y - r * 0.5);
+    ctx.arc(moonPos.x, moonPos.y - r * 0.5, r * 0.1, 0, TAU);
+    ctx.fill();
+  }
+}
+
+// Atmospheric haze: thickens toward the bottom of each band, pushing far layers back
+function drawHaze(topFrac, bottomFrac, strength) {
+  const g = ctx.createLinearGradient(0, H * topFrac, 0, H * bottomFrac);
+  g.addColorStop(0, css(L.haze, 0));
+  g.addColorStop(1, css(L.haze, strength));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, H * topFrac, W, H * (1 - topFrac));
+}
+
+// Falling snow catches the light: brighter and warmer near the sun, dim and blue at night
+function drawFlakes(camX, frameDt) {
+  const camDx = (camX - cam.renderX) * scale;
+  cam.renderX = camX;
+  const flakeColor = css(mixColor([255, 255, 255], L.light, 0.45));
+  const glintR = Math.min(W, H) * 0.6;
+  ctx.fillStyle = flakeColor;
+  for (const f of flakes) {
+    f.y += f.s * frameDt;
+    f.x -= camDx * f.z + 18 * frameDt;
+    if (f.y > H + 4) { f.y = -4; f.x = Math.random() * W; }
+    if (f.x < -4) f.x += W + 8;
+    if (f.x > W + 4) f.x -= W + 8;
+    let glint = 0;
+    if (sunPos) {
+      const d = Math.hypot(f.x - sunPos.x, f.y - sunPos.y);
+      glint = Math.max(0, 1 - d / glintR) * lightPower;
+    }
+    const sparkle = 0.85 + 0.15 * Math.sin(time * 9 + f.x * 0.05);
+    ctx.globalAlpha = clamp((0.35 + 0.3 * lightPower + 0.45 * glint) * sparkle, 0, 1);
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.r * (1 + glint * 0.4), 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
 // ---------- Rendering ----------
 function seedFlakes() {
   flakes.length = 0;
@@ -1121,20 +1305,58 @@ function seedFlakes() {
   }
 }
 
-function drawRange(camX, color, factor, baseFrac, a1, a2, f1, f2, seed) {
-  // Triangle waves give crisp flat-design peaks; factor sets parallax depth
+const ridgeBuf = [];
+function drawRange(camX, color, factor, baseFrac, a1, a2, f1, f2, seed, detail) {
+  // Three stacked triangle waves give crisp flat-design peaks with secondary ridges.
+  // factor sets parallax depth; detail adds snow caps or a treeline.
   const off = camX * scale * factor;
   const base = H * baseFrac;
-  ctx.fillStyle = color;
+  const a3 = a2 * 0.35;
+  const ridge = (u) => base - H * (a1 * tri(u * f1 + seed) + a2 * tri(u * f2 + seed * 2.3) + a3 * tri(u * f2 * 2.7 + seed * 3.1));
+  const n = Math.ceil(W / 4) + 2;
+  for (let i = 0; i < n; i++) ridgeBuf[i] = ridge(i * 4 + off);
+
+  // Body: lit from above, so the top of the layer picks up the light color
+  const top = base - H * (a1 + a2 + a3);
+  const g = ctx.createLinearGradient(0, top, 0, base);
+  g.addColorStop(0, css(mixColor(color, L.light, 0.12 + 0.12 * lightPower)));
+  g.addColorStop(1, css(color));
+  ctx.fillStyle = g;
   ctx.beginPath();
   ctx.moveTo(0, H);
-  for (let sx = 0; sx <= W + 4; sx += 4) {
-    const u = sx + off;
-    ctx.lineTo(sx, base - H * (a1 * tri(u * f1 + seed) + a2 * tri(u * f2 + seed * 2.3)));
-  }
-  ctx.lineTo(W + 4, H);
+  for (let i = 0; i < n; i++) ctx.lineTo(i * 4, ridgeBuf[i]);
+  ctx.lineTo((n - 1) * 4, H);
   ctx.closePath();
   ctx.fill();
+
+  if (detail === 'cap') {
+    // Snow caps: the strip between the ridge and a wavy snow line, only where peaks rise above it
+    const capLine = base - H * (a1 + a2) * 0.6;
+    ctx.fillStyle = css(mixColor(L.cap, L.light, 0.25 * lightPower));
+    ctx.beginPath();
+    ctx.moveTo(0, ridgeBuf[0]);
+    for (let i = 0; i < n; i++) ctx.lineTo(i * 4, ridgeBuf[i]);
+    for (let i = n - 1; i >= 0; i--) {
+      const wave = Math.sin((i * 4 + off) * 0.045) * H * 0.008;
+      ctx.lineTo(i * 4, Math.max(ridgeBuf[i], capLine + wave));
+    }
+    ctx.closePath();
+    ctx.fill();
+  } else if (detail === 'trees') {
+    // Treeline anchored to layer space, so trees scroll with the layer instead of shimmering
+    ctx.fillStyle = css(mixColor(color, [0, 0, 0], 0.25));
+    ctx.beginPath();
+    const gap = 9;
+    for (let u = Math.floor(off / gap) * gap; u < off + W + gap; u += gap) {
+      const hgt = 7 + hash(u * 0.37) * 12;
+      const sx = u - off;
+      const y = ridge(u) + 3;
+      ctx.moveTo(sx - 3.5, y);
+      ctx.lineTo(sx, y - hgt);
+      ctx.lineTo(sx + 3.5, y);
+    }
+    ctx.fill();
+  }
 }
 
 function groundPath(offset, x0, x1, bottom, stepSize) {
@@ -1148,7 +1370,7 @@ function groundPath(offset, x0, x1, bottom, stepSize) {
 }
 
 function drawPine(x, y, s) {
-  ctx.fillStyle = C.tree;
+  ctx.fillStyle = css(L.tree);
   ctx.fillRect(x - 2.5 * s, y - 10 * s, 5 * s, 12 * s);
   for (let k = 0; k < 3; k++) {
     const w = 24 * s * (1 - k * 0.24);
@@ -1164,7 +1386,7 @@ function drawPine(x, y, s) {
 
 function drawTrail(tipX, tipY, onGround) {
   // Carve line: a soft groove in the snow, broken wherever the rider was airborne
-  ctx.strokeStyle = C.carve;
+  ctx.strokeStyle = css(L.shade2, 0.7);
   ctx.lineWidth = 2.5;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -1179,19 +1401,41 @@ function drawTrail(tipX, tipY, onGround) {
   ctx.stroke();
 }
 
-function drawShadow(x, y) {
-  const gy = groundY(x);
-  const height = gy - y;
-  if (height < 2) return;
+// Soft contact shadow on the slope. It is pushed away from the light and shrinks
+// and fades as the object rises, which gives entities a 2.5D sense of height.
+function castShadow(x, height, width) {
   const k = clamp(1 - height / 420, 0.15, 1);
+  const sx = x - lightDirX * (6 + height * 0.25);
+  const gy = groundY(sx);
+  const alpha = (0.1 + 0.12 * Math.max(lightPower, 0.25)) * k;
   ctx.save();
-  ctx.translate(x, gy);
-  ctx.rotate(Math.atan(groundD1(x)));
-  ctx.fillStyle = 'rgba(29, 33, 64, ' + (0.18 * k).toFixed(3) + ')';
+  ctx.translate(sx, gy + 1);
+  ctx.rotate(Math.atan(groundD1(sx)));
+  ctx.fillStyle = 'rgba(20, 24, 50, ' + alpha.toFixed(3) + ')';
   ctx.beginPath();
-  ctx.ellipse(0, 0, 24 * k, 4 * k, 0, 0, TAU);
+  ctx.ellipse(0, 0, width * k, 3.5 * k + 1, 0, 0, TAU);
   ctx.fill();
   ctx.restore();
+}
+
+// Sparkles where the snow surface catches the light
+function drawGlints(x0, x1) {
+  if (lightPower < 0.05) return;
+  const cell = 37;
+  ctx.fillStyle = css(mixColor([255, 255, 255], L.light, 0.3));
+  for (let i = Math.floor(x0 / cell); i <= Math.floor(x1 / cell); i++) {
+    const h = hash(i * 3.7 + 1);
+    if (h > 0.2) continue;
+    const tw = Math.sin(time * 2.2 + h * 90);
+    if (tw < 0.6) continue;
+    const gx = i * cell + h * 30;
+    const gy = groundY(gx) + 3 + hash(i) * 10;
+    const s = 2 + 3 * (tw - 0.6) / 0.4;
+    ctx.globalAlpha = ((tw - 0.6) / 0.4) * lightPower * 0.9;
+    ctx.fillRect(gx - s, gy - 0.5, s * 2, 1);
+    ctx.fillRect(gx - 0.5, gy - s, 1, s * 2);
+  }
+  ctx.globalAlpha = 1;
 }
 
 function drawCoin(c) {
@@ -1199,6 +1443,12 @@ function drawCoin(c) {
   const y = c.y + Math.sin(time * 3 + c.phase) * 2.5;
   const w = Math.abs(Math.cos(time * 3.5 + c.phase));
   const rx = Math.max(1.5, COIN_R * w);
+  if (L.stars > 0.2) {
+    ctx.fillStyle = 'rgba(246, 196, 83, ' + (0.16 * L.stars).toFixed(3) + ')';
+    ctx.beginPath();
+    ctx.arc(c.x, y, COIN_R * 2.2, 0, TAU);
+    ctx.fill();
+  }
   ctx.fillStyle = C.goldDark;
   ctx.beginPath();
   ctx.ellipse(c.x, y, rx, COIN_R, 0, 0, TAU);
@@ -1251,6 +1501,15 @@ function drawJaguar(j, alpha) {
   ctx.beginPath();
   ctx.ellipse(0, -16 + bob, 24, 8.5, 0, 0, TAU);
   ctx.fill();
+  ctx.fillStyle = 'rgba(120, 70, 20, 0.35)';
+  ctx.beginPath();
+  ctx.ellipse(0, -12.5 + bob, 20, 4.5, 0, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = css(L.light, 0.12 + 0.25 * lightPower);
+  ctx.beginPath();
+  ctx.ellipse(1, -21.5 + bob, 17, 2.2, 0, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = C.jaguar;
   ctx.beginPath();
   ctx.arc(25, -21 + bob, 7.5, 0, TAU);
   ctx.fill();
@@ -1329,6 +1588,19 @@ function drawRider(x, y, angle, squash) {
   ctx.beginPath();
   ctx.arc(4, -38 + dip, 6.5, 0, TAU);
   ctx.fill();
+  // Rim light: rotate the world light direction into the rider's local space
+  const lx = Math.cos(angle) * lightDirX + Math.sin(angle) * -0.8;
+  const ly = -Math.sin(angle) * lightDirX + Math.cos(angle) * -0.8;
+  const len = Math.hypot(lx, ly) || 1;
+  const ox = (lx / len) * 2.6, oy = (ly / len) * 2.6;
+  ctx.strokeStyle = ctx.fillStyle = css(L.light, 0.2 + 0.45 * lightPower);
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(1 + ox, hip - 1 + oy); ctx.lineTo(3 + ox, -29 + dip + oy);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(4 + ox * 1.1, -38 + dip + oy * 1.1, 2.6, 0, TAU);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -1344,37 +1616,18 @@ function render(alpha, frameDt) {
   const shakeX = cam.shake * Math.sin(time * 61);
   const shakeY = cam.shake * Math.sin(time * 47 + 1.3);
 
+  updateLighting();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // Sky and sun
-  ctx.fillStyle = skyGrad;
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = C.sun;
-  ctx.beginPath();
-  ctx.arc(W * 0.72, H * 0.3, Math.min(W, H) * 0.07, 0, TAU);
-  ctx.fill();
-
-  // Two parallax mountain layers with a warm haze between them and the slope
-  drawRange(camX, C.far, 0.06, 0.64, 0.24, 0.07, 1 / 520, 1 / 190, 0.3);
-  drawRange(camX, C.near, 0.16, 0.76, 0.16, 0.06, 1 / 360, 1 / 140, 1.7);
-  ctx.fillStyle = hazeGrad;
-  ctx.fillRect(0, H * 0.5, W, H * 0.5);
-
-  // Ambient snowfall in screen space, moved by real frame time so it is smooth at any refresh rate
-  const camDx = (camX - cam.renderX) * scale;
-  cam.renderX = camX;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-  ctx.beginPath();
-  for (const f of flakes) {
-    f.y += f.s * frameDt;
-    f.x -= camDx * f.z + 18 * frameDt;
-    if (f.y > H + 4) { f.y = -4; f.x = Math.random() * W; }
-    if (f.x < -4) f.x += W + 8;
-    if (f.x > W + 4) f.x -= W + 8;
-    ctx.moveTo(f.x + f.r, f.y);
-    ctx.arc(f.x, f.y, f.r, 0, TAU);
-  }
-  ctx.fill();
+  // Background: sky, celestial bodies, then three mountain layers separated by haze
+  drawSky(camX);
+  drawRange(camX, L.far, 0.05, 0.64, 0.24, 0.07, 1 / 520, 1 / 190, 0.3, 'cap');
+  drawHaze(0.35, 0.68, 0.55);
+  drawRange(camX, L.mid, 0.1, 0.71, 0.17, 0.06, 1 / 420, 1 / 160, 2.9, 'cap');
+  drawHaze(0.5, 0.8, 0.75);
+  drawRange(camX, L.near, 0.18, 0.79, 0.12, 0.05, 1 / 330, 1 / 120, 1.7, 'trees');
+  drawHaze(0.62, 0.95, 1);
+  drawFlakes(camX, frameDt);
 
   // World layer
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale,
@@ -1391,18 +1644,35 @@ function render(alpha, frameDt) {
   }
   // Layered snow strata; sample density follows zoom so the edge stays smooth
   const stepSize = Math.max(3, 6 / scale);
-  ctx.fillStyle = C.snow;
+  ctx.fillStyle = css(L.snow);
   groundPath(0, x0, x1, bottom, stepSize);
-  ctx.fillStyle = C.rim;
+  ctx.fillStyle = css(L.rim);
   groundPath(16, x0, x1, bottom, stepSize);
-  ctx.fillStyle = C.shade1;
+  ctx.fillStyle = css(L.shade1);
   groundPath(70, x0, x1, bottom, stepSize);
-  ctx.fillStyle = C.shade2;
+  ctx.fillStyle = css(L.shade2);
   groundPath(180, x0, x1, bottom, stepSize);
+
+  // A thin rim of light along the crest of the snow
+  ctx.strokeStyle = css(mixColor([255, 255, 255], L.light, 0.5), 0.25 + 0.5 * lightPower);
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(x0, groundY(x0));
+  for (let x = x0; x <= x1; x += stepSize) ctx.lineTo(x, groundY(x));
+  ctx.stroke();
+  drawGlints(x0, x1);
 
   const onGround = state === 'playing' && !p.air;
   drawTrail(rx - Math.cos(ra) * 14, ry, onGround);
-  if (state === 'playing' && p.air) drawShadow(rx, ry);
+
+  // Shadows first, so every entity sits on top of its own shadow
+  for (const c of coins) {
+    if (c.x > x0 && c.x < x1) castShadow(c.x, groundY(c.x) - c.y, COIN_R * 0.9);
+  }
+  for (const j of jaguars) {
+    if (j.x > x0 - 50 && j.x < x1 + 50) castShadow(lerp(j.px, j.x, alpha), 0, 24);
+  }
+  castShadow(rx, Math.max(0, groundY(rx) - ry), 24);
 
   for (const r of rings) {
     const k = r.t / 0.5;
@@ -1464,6 +1734,7 @@ function startLoop() {
 function boot(data) {
   best = Math.max(loadBest(), (data && data.best) || 0);
   measure();
+  updateLighting();
   reset();
   seedFlakes();
   startLoop();
