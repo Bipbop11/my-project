@@ -15,6 +15,7 @@
     --text: #ffffff;
     --muted: rgba(255, 255, 255, 0.74);
     --accent: #e2574c;
+    --gold: #f6c453;
     --font: "Jost", "Futura", "Century Gothic", system-ui, sans-serif;
     color-scheme: dark;
   }
@@ -66,6 +67,13 @@
     font-variant-numeric: tabular-nums;
   }
   .hud-right .sub { margin-top: 0; }
+  #score { transform-origin: left center; }
+  #score.bump { animation: bump 0.35s ease-out; }
+  @keyframes bump {
+    0% { transform: scale(1); color: var(--text); }
+    35% { transform: scale(1.18); color: var(--gold); }
+    100% { transform: scale(1); }
+  }
   #pauseBtn {
     pointer-events: auto;
     width: 44px;
@@ -218,6 +226,7 @@
   <div>
     <div class="dist" id="dist">0 m</div>
     <div class="sub" id="score">Score 0</div>
+    <div class="sub" id="haul">Coins 0</div>
   </div>
   <div class="hud-right">
     <div class="sub" id="best">Best 0</div>
@@ -295,6 +304,13 @@ const TRAIL_MAX = 160;
 const TAU = Math.PI * 2;
 const DOT = String.fromCharCode(183);
 const GAME_KEYS = new Set(['Space', 'ArrowUp', 'KeyW']);
+// Entities
+const COIN_R = 9;            // coin radius in world units
+const COIN_POINTS = 10;
+const JAGUAR_POINTS = 250;
+const PLAYER_HIT_R = 20;     // player hit circle, centred on the torso
+const SPAWN_MARGIN = 220;    // spawn this far beyond the right edge of the view
+const DESPAWN_MARGIN = 120;  // remove this far behind the left edge of the view
 
 // Flat-design dusk palette used by the canvas
 const C = {
@@ -302,7 +318,9 @@ const C = {
   far: '#9a8bbb', near: '#615a92', haze: 'rgba(242, 165, 138, 0.28)',
   snow: '#eef0f8', rim: '#e4e6f3', shade1: '#d6d9ec', shade2: '#c1c4de',
   carve: 'rgba(150, 156, 196, 0.55)', tree: '#3a3f6b', ink: '#1d2140',
-  scarf: '#e2574c', spray: '#ffffff', boost: '#ffd2a6'
+  scarf: '#e2574c', spray: '#ffffff', boost: '#ffd2a6',
+  gold: '#f6c453', goldDark: '#d99a2b', goldLight: '#fde7a6',
+  jaguar: '#e39b3a', jaguarDark: '#c47d27', spots: '#4f3420'
 };
 
 // ---------- Terrain: a downward base slope plus layered sine waves ----------
@@ -399,6 +417,14 @@ const rings = [];
 const scarf = [];
 const trail = [];
 const flakes = [];
+const coins = [];
+const jaguars = [];
+const pops = [];             // expanding circles for coin and jaguar pickups
+const coinPool = [];         // recycled coin objects, so long runs do not churn memory
+let coinCount = 0;
+let jaguarCount = 0;
+let nextCoinX = 0;           // world x where the next coin pattern starts
+let nextJaguarX = 0;         // world x where the next jaguar appears
 
 function loadBest() {
   try { return parseInt(localStorage.getItem('ridgeline-best') || '0', 10) || 0; } catch (e) { return 0; }
@@ -422,6 +448,13 @@ function reset() {
   particles.length = 0;
   rings.length = 0;
   trail.length = 0;
+  pops.length = 0;
+  while (coins.length) coinPool.push(coins.pop());
+  jaguars.length = 0;
+  coinCount = 0;
+  jaguarCount = 0;
+  nextCoinX = 700;
+  nextJaguarX = 2600;
   snapCamera();
   initScarf();
 }
@@ -851,6 +884,163 @@ function stepScarf(dt) {
   }
 }
 
+// ---------- Entities: coins and jaguars ----------
+// Spawning is driven by the right edge of the view: patterns are created just off-screen,
+// and anything that scrolls past the left edge is removed (coins go back to a pool).
+function removeAt(arr, i) {
+  // Order does not matter for entities, so swap with the last item for O(1) removal
+  arr[i] = arr[arr.length - 1];
+  arr.pop();
+}
+
+function spawnCoin(x, y) {
+  const c = coinPool.pop() || {};
+  c.x = x;
+  c.y = y;
+  c.phase = Math.random() * TAU;
+  coins.push(c);
+}
+
+// Places one pattern starting at startX and returns its length in world units
+function spawnCoinPattern(startX) {
+  if (Math.random() < 0.5) {
+    // A line that hugs the snow: collected just by riding through it
+    const n = 5 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < n; i++) {
+      const x = startX + i * 42;
+      spawnCoin(x, groundY(x) - 28);
+    }
+    return n * 42;
+  }
+  // An arc above the slope: needs a well-timed jump
+  const n = 7;
+  const peak = 90 + Math.random() * 60;
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const x = startX + i * 44;
+    spawnCoin(x, groundY(x) - 30 - Math.sin(t * Math.PI) * peak);
+  }
+  return n * 44;
+}
+
+function spawnJaguar(x) {
+  const th = Math.atan(groundD1(x));
+  const y = groundY(x);
+  jaguars.push({
+    x, y, px: x, py: y, angle: th, pa: th,
+    speed: 330 + Math.random() * 140, // slower than a rider at cruising speed, so it can be caught
+    phase: Math.random() * TAU
+  });
+}
+
+function playerCenter() {
+  // Torso centre in world space, following the board's rotation
+  const c = Math.cos(p.angle), s = Math.sin(p.angle);
+  const lx = 2, ly = -22;
+  return { x: p.x + c * lx - s * ly, y: p.y + s * lx + c * ly };
+}
+
+function addPop(x, y, r0, r1, rgb, life) {
+  pops.push({ x, y, r0, r1, rgb, t: 0, life });
+}
+
+function bumpScore() {
+  const el = $('score');
+  el.classList.remove('bump');
+  void el.offsetWidth; // restart the CSS animation
+  el.classList.add('bump');
+}
+
+function collectCoin(c) {
+  coinCount++;
+  bonus += COIN_POINTS;
+  addPop(c.x, c.y, COIN_R, COIN_R * 3, '246, 196, 83', 0.35);
+  for (let i = 0; i < 6; i++) {
+    emit(c.x, c.y, (Math.random() - 0.5) * 240, -80 - Math.random() * 160,
+         0.3 + Math.random() * 0.2, 1.5 + Math.random() * 1.5, C.gold);
+  }
+  bumpScore();
+}
+
+function catchJaguar(j) {
+  jaguarCount++;
+  bonus += JAGUAR_POINTS;
+  addPop(j.x, j.y - 16, 16, 70, '246, 196, 83', 0.5);
+  addPop(j.x, j.y - 16, 8, 45, '255, 255, 255', 0.35);
+  for (let i = 0; i < 18; i++) {
+    const a = -Math.PI * Math.random();
+    const s = 120 + Math.random() * 260;
+    emit(j.x, j.y - 16, Math.cos(a) * s, Math.sin(a) * s, 0.5 + Math.random() * 0.4,
+         2 + Math.random() * 2.5, i % 3 === 0 ? C.spots : (i % 2 ? C.jaguar : C.gold));
+  }
+  p.boost = Math.max(p.boost, 0.6);
+  addShake(4);
+  toast('Jaguar caught  +' + JAGUAR_POINTS);
+  bumpScore();
+}
+
+function stepEntities(dt) {
+  const left = cam.x - DESPAWN_MARGIN;
+  const edge = cam.x + viewW + SPAWN_MARGIN;
+
+  // Spawn: fill everything up to just beyond the right edge
+  if (state === 'playing') {
+    while (nextCoinX < edge) {
+      nextCoinX += spawnCoinPattern(nextCoinX) + 350 + Math.random() * 650;
+    }
+    if (nextJaguarX < edge) {
+      spawnJaguar(edge);
+      nextJaguarX = edge + 2600 + Math.random() * 3200;
+    }
+  }
+
+  // Move jaguars along the terrain: a little slower uphill, a little faster downhill
+  for (const j of jaguars) {
+    j.px = j.x; j.py = j.y; j.pa = j.angle;
+    const th = Math.atan(groundD1(j.x));
+    const v = j.speed * (1 + 0.35 * Math.sin(th));
+    j.x += v * Math.cos(th) * dt;
+    j.y = groundY(j.x);
+    j.angle = lerpAngle(j.angle, th, smoothing(12, dt));
+    j.phase += v * dt * 0.045;
+  }
+
+  // Collision: circle against circle, checked every physics step.
+  // Movement per step (at most about 13 units) is smaller than the combined radii, so nothing is skipped.
+  if (state === 'playing') {
+    const pc = playerCenter();
+    const coinReach = (PLAYER_HIT_R + COIN_R) * (PLAYER_HIT_R + COIN_R);
+    for (let i = coins.length - 1; i >= 0; i--) {
+      const dx = coins[i].x - pc.x, dy = coins[i].y - pc.y;
+      if (dx * dx + dy * dy < coinReach) {
+        collectCoin(coins[i]);
+        coinPool.push(coins[i]);
+        removeAt(coins, i);
+      }
+    }
+    const jagReach = (PLAYER_HIT_R + 22) * (PLAYER_HIT_R + 22);
+    for (let i = jaguars.length - 1; i >= 0; i--) {
+      const dx = jaguars[i].x - pc.x, dy = jaguars[i].y - 16 - pc.y;
+      if (dx * dx + dy * dy < jagReach) {
+        catchJaguar(jaguars[i]);
+        removeAt(jaguars, i);
+      }
+    }
+  }
+
+  // Despawn: anything behind the view, and jaguars that escaped far ahead
+  for (let i = coins.length - 1; i >= 0; i--) {
+    if (coins[i].x < left) { coinPool.push(coins[i]); removeAt(coins, i); }
+  }
+  for (let i = jaguars.length - 1; i >= 0; i--) {
+    if (jaguars[i].x < left || jaguars[i].x > cam.x + viewW * 4) removeAt(jaguars, i);
+  }
+  for (let i = pops.length - 1; i >= 0; i--) {
+    pops[i].t += dt;
+    if (pops[i].t >= pops[i].life) removeAt(pops, i);
+  }
+}
+
 // ---------- Main update (fixed timestep) ----------
 function update(dt) {
   time += dt;
@@ -879,6 +1069,8 @@ function update(dt) {
   cam.y = lerp(cam.y, camTargetY(), smoothing(CAM_FOLLOW_Y, dt));
   cam.shake = lerp(cam.shake, 0, smoothing(10, dt));
 
+  stepEntities(dt);
+
   // Drop carve points that have scrolled off the left edge
   while (trail.length && (trail[0] === null || trail[0].x < cam.x - 40)) trail.shift();
 }
@@ -889,11 +1081,13 @@ function distance() { return Math.max(0, Math.floor(p.x / PX_PER_M)); }
 function score() { return distance() + bonus; }
 function updateHud() {
   const d = distance(), s = score();
-  const key = d + '|' + s + '|' + best;
+  const key = d + '|' + s + '|' + best + '|' + coinCount + '|' + jaguarCount;
   if (key === lastHud) return;
   lastHud = key;
   $('dist').textContent = d.toLocaleString('en-US') + ' m';
   $('score').textContent = 'Score ' + s.toLocaleString('en-US');
+  $('haul').textContent = 'Coins ' + coinCount +
+    (jaguarCount ? '  ' + DOT + '  Jaguars ' + jaguarCount : '');
   $('best').textContent = 'Best ' + best.toLocaleString('en-US');
 }
 function toast(msg) {
@@ -996,6 +1190,86 @@ function drawShadow(x, y) {
   ctx.fillStyle = 'rgba(29, 33, 64, ' + (0.18 * k).toFixed(3) + ')';
   ctx.beginPath();
   ctx.ellipse(0, 0, 24 * k, 4 * k, 0, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCoin(c) {
+  // Spin by squashing the width; bob gently up and down
+  const y = c.y + Math.sin(time * 3 + c.phase) * 2.5;
+  const w = Math.abs(Math.cos(time * 3.5 + c.phase));
+  const rx = Math.max(1.5, COIN_R * w);
+  ctx.fillStyle = C.goldDark;
+  ctx.beginPath();
+  ctx.ellipse(c.x, y, rx, COIN_R, 0, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = C.gold;
+  ctx.beginPath();
+  ctx.ellipse(c.x, y, Math.max(1, rx * 0.72), COIN_R * 0.72, 0, 0, TAU);
+  ctx.fill();
+  if (w > 0.4) {
+    ctx.fillStyle = C.goldLight;
+    ctx.beginPath();
+    ctx.ellipse(c.x - rx * 0.25, y - COIN_R * 0.3, rx * 0.18, COIN_R * 0.22, 0, 0, TAU);
+    ctx.fill();
+  }
+}
+
+const JAGUAR_SPOTS = [[-19, -14], [-14, -19], [-7, -13], [0, -19], [7, -14], [14, -19]];
+// Gallop: the back pair and the front pair each move together, slightly offset
+const JAGUAR_LEGS = [[-15, Math.PI], [-9, Math.PI + 0.6], [11, 0], [17, 0.6]];
+
+function drawJaguar(j, alpha) {
+  const x = lerp(j.px, j.x, alpha);
+  const y = lerp(j.py, j.y, alpha);
+  const a = lerpAngle(j.pa, j.angle, alpha);
+  const bob = Math.sin(j.phase * 2) * 1.2;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(a);
+  ctx.lineCap = 'round';
+  // Legs
+  ctx.strokeStyle = C.jaguarDark;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  for (const [hx, off] of JAGUAR_LEGS) {
+    const swing = Math.sin(j.phase + off);
+    const lift = Math.max(0, Math.cos(j.phase + off)) * 3;
+    ctx.moveTo(hx, -12 + bob);
+    ctx.lineTo(hx + swing * 7, -1 - lift);
+  }
+  ctx.stroke();
+  // Tail
+  ctx.strokeStyle = C.jaguar;
+  ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.moveTo(-21, -17 + bob);
+  ctx.quadraticCurveTo(-34, -18 + bob, -40, -27 + Math.sin(j.phase) * 4);
+  ctx.stroke();
+  // Body and head
+  ctx.fillStyle = C.jaguar;
+  ctx.beginPath();
+  ctx.ellipse(0, -16 + bob, 24, 8.5, 0, 0, TAU);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(25, -21 + bob, 7.5, 0, TAU);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(31, -18.5 + bob, 4.5, 3.5, 0, 0, TAU);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(19, -26 + bob); ctx.lineTo(20.5, -32 + bob); ctx.lineTo(24, -27.5 + bob);
+  ctx.moveTo(25, -28 + bob); ctx.lineTo(27.5, -33 + bob); ctx.lineTo(29.5, -27 + bob);
+  ctx.fill();
+  // Rosettes and eye
+  ctx.fillStyle = C.spots;
+  ctx.beginPath();
+  for (const [sx, sy] of JAGUAR_SPOTS) {
+    ctx.moveTo(sx + 1.8, sy + bob);
+    ctx.arc(sx, sy + bob, 1.8, 0, TAU);
+  }
+  ctx.moveTo(28.4, -23 + bob);
+  ctx.arc(27.2, -23 + bob, 1.2, 0, TAU);
   ctx.fill();
   ctx.restore();
 }
@@ -1136,6 +1410,22 @@ function render(alpha, frameDt) {
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.ellipse(r.x, r.y, 20 + k * 70, 5 + k * 16, Math.atan(groundD1(r.x)), 0, TAU);
+    ctx.stroke();
+  }
+
+  // Entities: only those inside the visible strip are drawn
+  for (const c of coins) {
+    if (c.x > x0 - COIN_R && c.x < x1 + COIN_R) drawCoin(c);
+  }
+  for (const j of jaguars) {
+    if (j.x > x0 - 50 && j.x < x1 + 50) drawJaguar(j, alpha);
+  }
+  ctx.lineWidth = 2;
+  for (const pp of pops) {
+    const k = pp.t / pp.life;
+    ctx.strokeStyle = 'rgba(' + pp.rgb + ', ' + (1 - k).toFixed(3) + ')';
+    ctx.beginPath();
+    ctx.arc(pp.x, pp.y, lerp(pp.r0, pp.r1, 1 - (1 - k) * (1 - k)), 0, TAU);
     ctx.stroke();
   }
 
