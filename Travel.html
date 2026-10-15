@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Travel</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --surface: #ffffff;
+      --text: #1f2933;
+      --muted: #5f6b76;
+      --accent: #0f766e;
+      --border: #e3ded4;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14181c;
+        --surface: #1d2329;
+        --text: #e6e8ea;
+        --muted: #9aa5b1;
+        --accent: #2dd4bf;
+        --border: #2c343c;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    header, main, footer {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 16px;
+    }
+
+    header {
+      padding-top: 48px;
+      padding-bottom: 24px;
+    }
+
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 2.25rem;
+    }
+
+    header p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    nav {
+      margin-top: 16px;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    nav a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    nav a:hover { text-decoration: underline; }
+
+    section { margin: 32px 0; }
+
+    h2 {
+      font-size: 1.4rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+
+    .card h3 { margin: 0 0 4px; }
+
+    .card .meta {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 8px;
+    }
+
+    ul.checklist { padding-left: 0; list-style: none; }
+    ul.checklist li { margin: 6px 0; }
+
+    footer {
+      padding-top: 24px;
+      padding-bottom: 48px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Travel</h1>
+    <p>Trips, plans, and places to go.</p>
+    <nav>
+      <a href="#destinations">Destinations</a>
+      <a href="#itinerary">Itinerary</a>
+      <a href="#packing">Packing list</a>
+    </nav>
+  </header>
+
+  <main>
+    <section id="destinations">
+      <h2>Destinations</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>Destination one</h3>
+          <div class="meta">Country · Dates</div>
+          <p>Short note about why you want to go.</p>
+        </article>
+        <article class="card">
+          <h3>Destination two</h3>
+          <div class="meta">Country · Dates</div>
+          <p>Short note about why you want to go.</p>
+        </article>
+        <article class="card">
+          <h3>Destination three</h3>
+          <div class="meta">Country · Dates</div>
+          <p>Short note about why you want to go.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="itinerary">
+      <h2>Itinerary</h2>
+      <ol>
+        <li><strong>Day 1</strong> — Arrive, check in, explore the neighborhood.</li>
+        <li><strong>Day 2</strong> — Main sights and a local food spot.</li>
+        <li><strong>Day 3</strong> — Day trip or free day.</li>
+      </ol>
+    </section>
+
+    <section id="packing">
+      <h2>Packing list</h2>
+      <ul class="checklist">
+        <li><label><input type="checkbox"> Passport / ID</label></li>
+        <li><label><input type="checkbox"> Tickets and bookings</label></li>
+        <li><label><input type="checkbox"> Phone charger and adapter</label></li>
+        <li><label><input type="checkbox"> Clothes for the weather</label></li>
+        <li><label><input type="checkbox"> Toiletries and medication</label></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 · My Travel Page</p>
+  </footer>
+</body>
+</html>
