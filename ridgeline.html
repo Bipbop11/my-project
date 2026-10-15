@@ -83,6 +83,59 @@
   #pauseBtn:hover { background: rgba(29, 33, 64, 0.5); }
   #pauseBtn:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
   #pauseBtn svg { width: 16px; height: 16px; fill: currentColor; }
+  #menu {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .menu-card {
+    width: min(320px, 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 20px;
+    padding: 28px 28px 22px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(29, 33, 64, 0.72);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    text-align: center;
+    box-shadow: 0 18px 50px rgba(15, 18, 40, 0.35);
+  }
+  .menu-card h2 {
+    margin: 0;
+    font-size: 30px;
+    font-weight: 300;
+    letter-spacing: 0.3em;
+    padding-left: 0.3em;
+    text-transform: uppercase;
+  }
+  .menu-card .stats { justify-content: center; }
+  .menu-actions { display: flex; flex-direction: column; gap: 10px; }
+  .menu-actions button {
+    height: 48px;
+    border-radius: 999px;
+    font: 500 13px/1 var(--font);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .btn-primary { background: var(--text); color: var(--ink); border: 1.5px solid var(--text); }
+  .btn-primary:hover { background: rgba(255, 255, 255, 0.88); }
+  .btn-secondary { background: transparent; color: var(--text); border: 1.5px solid rgba(255, 255, 255, 0.5); }
+  .btn-secondary:hover { background: rgba(255, 255, 255, 0.1); }
+  .menu-actions button:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+  .menu-hint {
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
   #toast {
     position: fixed;
     left: 50%;
@@ -159,7 +212,7 @@
 </style>
 </head>
 <body>
-<canvas id="game" tabindex="-1" aria-label="Ridgeline. Press Space or tap to jump, hold in the air to backflip, press P to pause."></canvas>
+<canvas id="game" tabindex="-1" aria-label="Ridgeline. Press Space or Up to jump, hold in the air to backflip. Click or press P to pause."></canvas>
 
 <div id="hud" hidden>
   <div>
@@ -177,11 +230,26 @@
 
 <div id="toast" aria-live="polite"></div>
 
+<div id="menu" role="dialog" aria-modal="true" aria-labelledby="menuTitle" hidden>
+  <div class="menu-card">
+    <h2 id="menuTitle">Paused</h2>
+    <div class="stats">
+      <div class="stat"><b id="mScore">0</b><span>Score</span></div>
+      <div class="stat"><b id="mDist">0</b><span>Metres</span></div>
+    </div>
+    <div class="menu-actions">
+      <button id="resumeBtn" class="btn-primary" type="button">Resume</button>
+      <button id="restartBtn" class="btn-secondary" type="button">Restart</button>
+    </div>
+    <div class="menu-hint">P or Esc to resume</div>
+  </div>
+</div>
+
 <div id="panel">
   <div class="card" id="intro">
     <h1>Ridgeline</h1>
-    <p>Tap, click or press Space to jump. Hold in the air to backflip. Land with your board along the slope. Press P to pause.</p>
-    <div class="cta">Tap to ride</div>
+    <p>Press Space or Up to jump. Hold it in the air to backflip. Land with your board along the slope. Click the screen or press P to pause.</p>
+    <div class="cta">Press Space to ride</div>
   </div>
   <div class="card" id="over" hidden>
     <h2>Wiped out</h2>
@@ -190,7 +258,7 @@
       <div class="stat"><b id="oScore">0</b><span>Score</span></div>
       <div class="stat"><b id="oBest">0</b><span>Best</span></div>
     </div>
-    <div class="cta">Tap to ride again</div>
+    <div class="cta">Press Space to ride again</div>
   </div>
 </div>
 
@@ -395,14 +463,45 @@ function pause() {
   document.body.classList.add('is-paused');
   setPauseButton();
   drawPausedFrame();
+  openMenu();
 }
 
 function resume() {
   if (!paused) return;
   paused = false;
+  closeMenu();
   document.body.classList.remove('is-paused');
   setPauseButton();
   startLoop();
+}
+
+function restartRun() {
+  const wasPaused = paused;
+  paused = false;
+  closeMenu();
+  document.body.classList.remove('is-paused');
+  setPauseButton();
+  $('over').hidden = true;
+  reset();
+  start();
+  input.delay = Infinity;
+  if (wasPaused) startLoop(); // the loop was stopped by pause()
+}
+
+// ---------- Pause menu ----------
+function openMenu() {
+  $('mScore').textContent = score().toLocaleString('en-US');
+  $('mDist').textContent = distance().toLocaleString('en-US');
+  $('hud').hidden = true;
+  $('menu').hidden = false;
+  $('resumeBtn').focus({ preventScroll: true });
+}
+
+function closeMenu() {
+  // Move focus off the menu buttons so Space goes back to jumping
+  if ($('menu').contains(document.activeElement)) document.activeElement.blur();
+  $('menu').hidden = true;
+  if (state === 'playing') $('hud').hidden = false;
 }
 
 function togglePause() {
@@ -416,28 +515,17 @@ function setPauseButton() {
 }
 
 function drawPausedFrame() {
+  // Freeze the last frame and dim it; the HTML menu sits on top
   render(1, 0);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.fillStyle = 'rgba(29, 33, 64, 0.55)';
+  ctx.fillStyle = 'rgba(29, 33, 64, 0.5)';
   ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#ffffff';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const size = clamp(W * 0.09, 34, 80);
-  const spacing = Math.round(size * 0.3);
-  ctx.font = '300 ' + size + 'px Jost, Futura, system-ui, sans-serif';
-  if ('letterSpacing' in ctx) ctx.letterSpacing = spacing + 'px';
-  ctx.fillText('PAUSED', W / 2 + spacing / 2, H * 0.42);
-  ctx.font = '500 13px Jost, Futura, system-ui, sans-serif';
-  if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
-  ctx.fillText('TAP OR PRESS P TO RESUME', W / 2, H * 0.42 + size * 0.75);
-  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
 }
 
 // ---------- Input ----------
-// Several sources (Space, Up, a finger, a mouse button) can hold the input at once.
-// The press fires on the first source down; the release fires only when the last one lets go.
+// Jumping and flipping are keyboard only. Mouse and touch never reach press(); they pause instead.
+// Several keys (Space, Up, W) can hold the input at once.
+// The press fires on the first key down; the release fires only when the last key lets go.
 function inputDown(id) {
   const wasDown = held.size > 0;
   held.add(id);
@@ -456,22 +544,14 @@ function inputClear() {
 function press() {
   input.down = true;
   input.age = 0;
-  if (paused) {
-    resume();
-    input.delay = Infinity; // the resume tap should not spin the rider
-    return;
-  }
+  if (paused) return; // menu is open; keys there act on the focused button
   if (state === 'ready') {
     start();
-    input.delay = Infinity; // the start tap should not spin the rider
+    input.delay = Infinity; // the start key should not spin the rider
     return;
   }
   if (state === 'crashed') {
-    if (p.crashT > 0.7) {
-      reset();
-      start();
-      input.delay = Infinity;
-    }
+    if (p.crashT > 0.7) restartRun();
     return;
   }
   if (!p.air || (!p.jumped && p.airT < COYOTE_TIME)) {
@@ -483,39 +563,44 @@ function press() {
 }
 function release() { input.down = false; }
 
+// Keyboard: the only path to jump and flip
 window.addEventListener('keydown', (e) => {
-  if (GAME_KEYS.has(e.code)) {
-    e.preventDefault(); // stop page scrolling and button activation
-    if (!e.repeat) inputDown(e.code);
-  } else if (e.code === 'KeyP' || e.code === 'Escape') {
+  if (e.code === 'KeyP' || e.code === 'Escape') {
     e.preventDefault();
     if (!e.repeat) togglePause();
+    return;
   }
-}, { passive: false });
+  // While the menu is open, let Space and Enter activate the focused menu button natively
+  if (paused) return;
+  if (GAME_KEYS.has(e.code)) {
+    e.preventDefault(); // stop page scrolling and stray button activation
+    if (!e.repeat) inputDown(e.code);
+  }
+});
 window.addEventListener('keyup', (e) => {
   if (GAME_KEYS.has(e.code)) {
-    e.preventDefault();
-    inputUp(e.code);
+    if (!paused) e.preventDefault();
+    inputUp(e.code); // always release, even if the key was pressed before pausing
   }
-}, { passive: false });
+});
+window.addEventListener('blur', inputClear);
 
+// Mouse and touch: pause during a run, start or restart on the title and game-over screens
 cv.addEventListener('pointerdown', (e) => {
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   e.preventDefault();
-  try { cv.setPointerCapture(e.pointerId); } catch (err) { /* capture is optional */ }
-  inputDown('pointer' + e.pointerId);
+  if (state === 'playing') pause();
+  else if (state === 'ready') start();
+  else if (state === 'crashed' && p.crashT > 0.7) restartRun();
 });
-const pointerUp = (e) => inputUp('pointer' + e.pointerId);
-cv.addEventListener('pointerup', pointerUp);
-cv.addEventListener('pointercancel', pointerUp);
-cv.addEventListener('lostpointercapture', pointerUp);
 cv.addEventListener('contextmenu', (e) => e.preventDefault());
-window.addEventListener('blur', inputClear);
 
 $('pauseBtn').addEventListener('click', (e) => {
   e.currentTarget.blur(); // keep Space bound to jumping, not to this button
   togglePause();
 });
+$('resumeBtn').addEventListener('click', resume);
+$('restartBtn').addEventListener('click', restartRun);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     inputClear();
