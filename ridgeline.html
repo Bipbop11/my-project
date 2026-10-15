@@ -19,13 +19,14 @@
     color-scheme: dark;
   }
   [hidden] { display: none !important; }
-  html, body { height: 100%; margin: 0; overflow: hidden; }
+  html, body { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
   body {
     background: var(--sky-top);
     color: var(--text);
     font-family: var(--font);
     user-select: none;
     -webkit-user-select: none;
+    -webkit-touch-callout: none;
     -webkit-tap-highlight-color: transparent;
   }
   canvas {
@@ -36,6 +37,7 @@
     display: block;
     touch-action: none;
     cursor: pointer;
+    outline: none;
   }
   #hud {
     position: fixed;
@@ -48,6 +50,7 @@
     gap: 16px;
     pointer-events: none;
   }
+  .hud-right { display: flex; align-items: center; gap: 14px; }
   .dist {
     font-size: clamp(28px, 5vw, 44px);
     font-weight: 300;
@@ -62,6 +65,24 @@
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
+  .hud-right .sub { margin-top: 0; }
+  #pauseBtn {
+    pointer-events: auto;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.6);
+    background: rgba(29, 33, 64, 0.3);
+    color: var(--text);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #pauseBtn:hover { background: rgba(29, 33, 64, 0.5); }
+  #pauseBtn:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+  #pauseBtn svg { width: 16px; height: 16px; fill: currentColor; }
   #toast {
     position: fixed;
     left: 50%;
@@ -77,6 +98,7 @@
     text-shadow: 0 1px 12px rgba(29, 33, 64, 0.5);
   }
   #toast.show { animation: pop 1.4s ease-out forwards; }
+  body.is-paused #toast { animation-play-state: paused; }
   @keyframes pop {
     0% { opacity: 0; transform: translate(-50%, 8px); }
     15% { opacity: 1; transform: translate(-50%, 0); }
@@ -135,17 +157,22 @@
     .cta { animation: none; }
   }
 </style>
-
 </head>
 <body>
-<canvas id="game" aria-label="Ridgeline. Press Space or tap to jump, hold in the air to backflip."></canvas>
+<canvas id="game" tabindex="-1" aria-label="Ridgeline. Press Space or tap to jump, hold in the air to backflip, press P to pause."></canvas>
 
 <div id="hud" hidden>
   <div>
     <div class="dist" id="dist">0 m</div>
     <div class="sub" id="score">Score 0</div>
   </div>
-  <div class="sub" id="best">Best 0</div>
+  <div class="hud-right">
+    <div class="sub" id="best">Best 0</div>
+    <button id="pauseBtn" type="button" aria-label="Pause">
+      <svg id="iconPause" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1"></rect><rect x="9.5" y="2" width="3.5" height="12" rx="1"></rect></svg>
+      <svg id="iconPlay" viewBox="0 0 16 16" aria-hidden="true" hidden><path d="M4 2.2v11.6c0 .6.7 1 1.2.6l8.4-5.8c.4-.3.4-.9 0-1.2L5.2 1.6C4.7 1.2 4 1.6 4 2.2z"></path></svg>
+    </button>
+  </div>
 </div>
 
 <div id="toast" aria-live="polite"></div>
@@ -153,7 +180,7 @@
 <div id="panel">
   <div class="card" id="intro">
     <h1>Ridgeline</h1>
-    <p>Tap, click or press Space to jump. Hold in the air to backflip. Land with your board along the slope.</p>
+    <p>Tap, click or press Space to jump. Hold in the air to backflip. Land with your board along the slope. Press P to pause.</p>
     <div class="cta">Tap to ride</div>
   </div>
   <div class="card" id="over" hidden>
@@ -171,22 +198,43 @@
 'use strict';
 
 // ---------- Tuning constants ----------
-const G = 1500;              // gravity, world units per second squared
-const STEP = 1 / 120;        // fixed physics timestep
+// Physics
+const G = 1600;              // gravity, world units per second squared
+const FALL_MULT = 1.2;       // extra gravity while falling, for a weightier arc
+const STEP = 1 / 120;        // fixed physics timestep (seconds)
+const MAX_FRAME = 0.1;       // clamp long frames (tab switches) to avoid a spiral of catch-up steps
 const MIN_SPEED = 180;       // the rider never fully stalls on uphills
-const MAX_SPEED = 1500;
-const JUMP = 560;            // jump impulse along the slope normal
-const ROT_MAX = 7.5;         // max backflip spin, radians per second
-const CRASH_ANGLE = 0.7;     // landing tolerance against the slope, radians
-const PERFECT_ANGLE = 0.18;  // tighter tolerance for a perfect landing
+const MAX_SPEED = 1550;
+const SNOW_MU = 0.03;        // snow friction coefficient, scaled by the normal force
+const AIR_DRAG = 0.0003;     // quadratic air drag
+const BOOST_ACCEL = 650;     // extra acceleration while a flip boost is active
+const JUMP = 600;            // jump impulse along the slope normal
+const COYOTE_TIME = 0.1;     // a jump pressed just after rolling off a crest still counts
+// Spin and landing
+const ROT_MAX = 7.6;         // max backflip spin, radians per second
+const SPIN_DELAY = 0.12;     // hold time after a jump before the spin begins
+const CRASH_ANGLE = 0.85;    // landing tolerance against the slope, radians (about 49 degrees)
+const PERFECT_ANGLE = 0.22;  // tighter tolerance for a perfect landing (about 13 degrees)
+const ASSIST_RANGE = 0.6;    // when not spinning, ease the board toward the slope inside this range
+// Camera
+const CAM_FOLLOW_X = 10;     // horizontal camera smoothing rate (per second)
+const CAM_FOLLOW_Y = 4;      // vertical camera smoothing rate (per second)
+const ZOOM_OUT = 0.12;       // how far the camera pulls back at top speed
+// Misc
 const PX_PER_M = 40;         // world units per metre shown in the HUD
+const SCARF_POINTS = 8;
+const TRAIL_MAX = 160;
 const TAU = Math.PI * 2;
+const DOT = String.fromCharCode(183);
+const GAME_KEYS = new Set(['Space', 'ArrowUp', 'KeyW']);
 
 // Flat-design dusk palette used by the canvas
 const C = {
   skyTop: '#27315c', skyMid: '#8c6f9f', skyLow: '#f2a58a', sun: '#ffe1c4',
-  far: '#9a8bbb', near: '#615a92', snow: '#eef0f8', shade1: '#dadcee', shade2: '#c4c7df',
-  tree: '#3a3f6b', ink: '#1d2140', scarf: '#e2574c', spray: '#ffffff', boost: '#ffd2a6'
+  far: '#9a8bbb', near: '#615a92', haze: 'rgba(242, 165, 138, 0.28)',
+  snow: '#eef0f8', rim: '#e4e6f3', shade1: '#d6d9ec', shade2: '#c1c4de',
+  carve: 'rgba(150, 156, 196, 0.55)', tree: '#3a3f6b', ink: '#1d2140',
+  scarf: '#e2574c', spray: '#ffffff', boost: '#ffd2a6'
 };
 
 // ---------- Terrain: a downward base slope plus layered sine waves ----------
@@ -212,6 +260,10 @@ function groundD2(x) {
   for (const t of TERRAIN) d -= t.a * t.f * t.f * Math.sin(t.f * x + t.p);
   return d;
 }
+// Slope under the whole board (nose to tail) rather than a single point; fairer on curved ground
+function boardSlope(x) {
+  return Math.atan2(groundY(x + 18) - groundY(x - 18), 36);
+}
 
 // ---------- Helpers ----------
 function wrapAngle(a) {
@@ -228,40 +280,56 @@ function tri(u) {
   return 1 - Math.abs(t * 2 - 1);
 }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerpAngle(a, b, t) { return a + wrapAngle(b - a) * t; }
+// Frame-rate independent lerp factor for a smoothing rate per second
+function smoothing(rate, dt) { return 1 - Math.exp(-rate * dt); }
 const $ = (id) => document.getElementById(id);
 
 // ---------- Canvas and viewport ----------
 const cv = $('game');
 const ctx = cv.getContext('2d');
-let W = 0, H = 0, dpr = 1, scale = 1, viewW = 0, viewH = 0, skyGrad = null;
+let W = 0, H = 0, dpr = 1, baseScale = 1, scale = 1, viewW = 0, viewH = 0;
+let skyGrad = null, hazeGrad = null;
 
-function resize() {
+function measure() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth;
   H = window.innerHeight;
   cv.width = Math.round(W * dpr);
   cv.height = Math.round(H * dpr);
   // Fit roughly 900 x 620 world units, but never zoom out so far that phones get a tiny rider
-  scale = Math.max(Math.min(H / 620, W / 900), Math.min(H / 620, 0.62));
-  viewW = W / scale;
-  viewH = H / scale;
+  baseScale = Math.max(Math.min(H / 620, W / 900), Math.min(H / 620, 0.62));
+  applyZoom();
   skyGrad = ctx.createLinearGradient(0, 0, 0, H);
   skyGrad.addColorStop(0, C.skyTop);
   skyGrad.addColorStop(0.45, C.skyMid);
   skyGrad.addColorStop(0.8, C.skyLow);
+  hazeGrad = ctx.createLinearGradient(0, H * 0.5, 0, H * 0.8);
+  hazeGrad.addColorStop(0, 'rgba(242, 165, 138, 0)');
+  hazeGrad.addColorStop(1, C.haze);
+}
+function applyZoom() {
+  scale = baseScale * cam.zoom;
+  viewW = W / scale;
+  viewH = H / scale;
 }
 
 // ---------- Game state ----------
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 let state = 'ready';         // 'ready' | 'playing' | 'crashed'
+let paused = false;
 let best = 0;
 let bonus = 0;
 let time = 0;
 const p = {};
-const cam = { x: 0, y: 0, lastX: 0 };
+const cam = { x: 0, y: 0, px: 0, py: 0, vel: 0, zoom: 1, shake: 0, renderX: 0 };
 const input = { down: false, age: 0, delay: 0 };
+const held = new Set();      // every key and pointer currently holding the input
 const particles = [];
-const scarfHist = [];
+const rings = [];
+const scarf = [];
+const trail = [];
 const flakes = [];
 
 function loadBest() {
@@ -275,19 +343,37 @@ function reset() {
   Object.assign(p, {
     x: 0, y: groundY(0), v: 0, vx: 0, vy: 0,
     angle: Math.atan(groundD1(0)), angVel: 0,
-    air: false, airT: 0, rot: 0, boost: 0, crashT: 0
+    air: false, jumped: false, airT: 0, rot: 0, boost: 0, crashT: 0, squash: 0
   });
+  p.px = p.x; p.py = p.y; p.pa = p.angle; p.ps = 0;
   bonus = 0;
+  cam.vel = 0;
+  cam.zoom = 1;
+  cam.shake = 0;
+  applyZoom();
   particles.length = 0;
-  scarfHist.length = 0;
-  cam.x = p.x - viewW / 3;
-  cam.y = camTargetY();
-  cam.lastX = cam.x;
+  rings.length = 0;
+  trail.length = 0;
+  snapCamera();
+  initScarf();
 }
 
+function camAnchor() {
+  // Portrait screens show more sky above, so sit the rider a little higher
+  return H > W ? 0.45 : 0.5;
+}
+function camTargetX() {
+  // Lead by the smoothing lag (velocity / rate) so the rider settles exactly on the left third
+  return p.x - viewW / 3 + cam.vel / CAM_FOLLOW_X;
+}
 function camTargetY() {
   // Blend the rider height with the ground ahead so descents stay in view
-  return p.y * 0.6 + groundY(p.x + viewW * 0.35) * 0.4 - viewH * 0.5;
+  return p.y * 0.6 + groundY(p.x + viewW * 0.35) * 0.4 - viewH * camAnchor();
+}
+function snapCamera() {
+  cam.x = cam.px = camTargetX();
+  cam.y = cam.py = camTargetY();
+  cam.renderX = cam.x;
 }
 
 function start() {
@@ -297,11 +383,84 @@ function start() {
   $('hud').hidden = false;
 }
 
+// ---------- Pause ----------
+let rafId = 0;
+
+function pause() {
+  if (paused || state !== 'playing') return;
+  paused = true;
+  held.clear();
+  input.down = false;
+  cancelAnimationFrame(rafId);
+  document.body.classList.add('is-paused');
+  setPauseButton();
+  drawPausedFrame();
+}
+
+function resume() {
+  if (!paused) return;
+  paused = false;
+  document.body.classList.remove('is-paused');
+  setPauseButton();
+  startLoop();
+}
+
+function togglePause() {
+  if (paused) resume(); else pause();
+}
+
+function setPauseButton() {
+  $('iconPause').hidden = paused;
+  $('iconPlay').hidden = !paused;
+  $('pauseBtn').setAttribute('aria-label', paused ? 'Resume' : 'Pause');
+}
+
+function drawPausedFrame() {
+  render(1, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = 'rgba(29, 33, 64, 0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const size = clamp(W * 0.09, 34, 80);
+  const spacing = Math.round(size * 0.3);
+  ctx.font = '300 ' + size + 'px Jost, Futura, system-ui, sans-serif';
+  if ('letterSpacing' in ctx) ctx.letterSpacing = spacing + 'px';
+  ctx.fillText('PAUSED', W / 2 + spacing / 2, H * 0.42);
+  ctx.font = '500 13px Jost, Futura, system-ui, sans-serif';
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+  ctx.fillText('TAP OR PRESS P TO RESUME', W / 2, H * 0.42 + size * 0.75);
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+}
+
 // ---------- Input ----------
+// Several sources (Space, Up, a finger, a mouse button) can hold the input at once.
+// The press fires on the first source down; the release fires only when the last one lets go.
+function inputDown(id) {
+  const wasDown = held.size > 0;
+  held.add(id);
+  if (!wasDown) press();
+}
+function inputUp(id) {
+  if (!held.delete(id)) return;
+  if (held.size === 0) release();
+}
+function inputClear() {
+  held.clear();
+  release();
+}
+
+// Game actions run synchronously inside the event handler, so a jump is applied before the next frame
 function press() {
-  if (input.down) return;
   input.down = true;
   input.age = 0;
+  if (paused) {
+    resume();
+    input.delay = Infinity; // the resume tap should not spin the rider
+    return;
+  }
   if (state === 'ready') {
     start();
     input.delay = Infinity; // the start tap should not spin the rider
@@ -315,52 +474,95 @@ function press() {
     }
     return;
   }
-  if (!p.air) {
+  if (!p.air || (!p.jumped && p.airT < COYOTE_TIME)) {
     jump();
-    input.delay = 0.14; // short grace so a quick tap jumps without flipping
+    input.delay = SPIN_DELAY; // short grace so a quick tap jumps without flipping
   } else {
-    input.delay = 0;    // a fresh press in the air spins immediately
+    input.delay = 0;          // a fresh press in the air spins immediately
   }
 }
 function release() { input.down = false; }
 
-cv.addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
-window.addEventListener('pointerup', release);
-window.addEventListener('pointercancel', release);
-window.addEventListener('blur', release);
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' || e.code === 'ArrowUp') {
+  if (GAME_KEYS.has(e.code)) {
+    e.preventDefault(); // stop page scrolling and button activation
+    if (!e.repeat) inputDown(e.code);
+  } else if (e.code === 'KeyP' || e.code === 'Escape') {
     e.preventDefault();
-    if (!e.repeat) press();
+    if (!e.repeat) togglePause();
+  }
+}, { passive: false });
+window.addEventListener('keyup', (e) => {
+  if (GAME_KEYS.has(e.code)) {
+    e.preventDefault();
+    inputUp(e.code);
+  }
+}, { passive: false });
+
+cv.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  e.preventDefault();
+  try { cv.setPointerCapture(e.pointerId); } catch (err) { /* capture is optional */ }
+  inputDown('pointer' + e.pointerId);
+});
+const pointerUp = (e) => inputUp('pointer' + e.pointerId);
+cv.addEventListener('pointerup', pointerUp);
+cv.addEventListener('pointercancel', pointerUp);
+cv.addEventListener('lostpointercapture', pointerUp);
+cv.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('blur', inputClear);
+
+$('pauseBtn').addEventListener('click', (e) => {
+  e.currentTarget.blur(); // keep Space bound to jumping, not to this button
+  togglePause();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    inputClear();
+    pause();
   }
 });
-window.addEventListener('keyup', (e) => {
-  if (e.code === 'Space' || e.code === 'ArrowUp') release();
-});
-window.addEventListener('resize', resize);
+
+// ---------- Resize ----------
+function onResize() {
+  measure();
+  snapCamera();
+  seedFlakes();
+  if (paused) drawPausedFrame();
+}
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', onResize);
 
 // ---------- Physics ----------
 function jump() {
-  const th = Math.atan(groundD1(p.x));
+  // From the ground use the live slope; during coyote time use the slope just left behind
+  const th = p.air ? Math.atan2(p.vy, p.vx) : Math.atan(groundD1(p.x));
+  const speed = p.air ? Math.hypot(p.vx, p.vy) : p.v;
   // Launch along the current velocity plus an impulse along the slope normal
-  p.vx = Math.max(120, p.v * Math.cos(th) + Math.sin(th) * JUMP);
-  p.vy = p.v * Math.sin(th) - Math.cos(th) * JUMP;
-  takeOff();
+  p.vx = Math.max(120, speed * Math.cos(th) + Math.sin(th) * JUMP);
+  p.vy = speed * Math.sin(th) - Math.cos(th) * JUMP;
+  takeOff(true);
+  p.squash = -0.35; // a quick stretch on take-off
   burst(8, 0.6);
 }
 
-function takeOff() {
+function takeOff(jumped) {
   p.air = true;
+  p.jumped = jumped;
   p.airT = 0;
   p.rot = 0;
   p.angVel = 0;
+  trail.push(null); // break the carve line while airborne
 }
 
 function stepGround(dt) {
   const th = Math.atan(groundD1(p.x));
-  // Gravity along the slope, minus constant friction and quadratic air drag
-  let a = G * Math.sin(th) - 40 - 0.00035 * p.v * p.v;
-  if (p.boost > 0) { a += 600; p.boost -= dt; }
+  // Gravity along the slope, minus snow friction (scaled by the normal force) and air drag
+  let a = G * Math.sin(th) - SNOW_MU * G * Math.cos(th) - AIR_DRAG * p.v * p.v;
+  if (p.boost > 0) {
+    a += BOOST_ACCEL * Math.min(1, p.boost); // fade the boost out over its last second
+    p.boost -= dt;
+  }
   p.v = clamp(p.v + a * dt, MIN_SPEED, MAX_SPEED);
 
   const vx = p.v * Math.cos(th);
@@ -368,27 +570,36 @@ function stepGround(dt) {
   if (groundD2(p.x) * vx * vx > G * 1.05) {
     p.vx = vx;
     p.vy = p.v * Math.sin(th);
-    takeOff();
+    takeOff(false);
     return;
   }
   p.x += vx * dt;
   p.y = groundY(p.x);
-  p.angle += wrapAngle(th - p.angle) * Math.min(1, dt * 18);
+  p.angle = lerpAngle(p.angle, th, smoothing(18, dt));
 
+  addTrailPoint();
   if (Math.random() < p.v / 900) spray(th);
 }
 
 function stepAir(dt) {
   p.airT += dt;
-  p.vy += G * dt;
+  p.vy += G * (p.vy > 0 ? FALL_MULT : 1) * dt;
   p.x += p.vx * dt;
   p.y += p.vy * dt;
   if (p.boost > 0) p.boost -= dt;
 
   // Holding spins backwards (counter-clockwise on screen); releasing lets the spin die out
   const spinning = input.down && input.age >= input.delay;
-  if (spinning) p.angVel += (-ROT_MAX - p.angVel) * Math.min(1, dt * 9);
-  else p.angVel *= Math.exp(-dt * 5);
+  if (spinning) {
+    p.angVel = lerp(p.angVel, -ROT_MAX, smoothing(9, dt));
+  } else {
+    p.angVel *= Math.exp(-dt * 5);
+    // Landing assist: once the spin has mostly settled, ease the board toward the slope below
+    if (Math.abs(p.angVel) < 1.5) {
+      const d = wrapAngle(boardSlope(p.x) - p.angle);
+      if (Math.abs(d) < ASSIST_RANGE) p.angle += d * smoothing(2.5, dt);
+    }
+  }
   p.angle += p.angVel * dt;
   p.rot += p.angVel * dt;
 
@@ -397,11 +608,12 @@ function stepAir(dt) {
 }
 
 function land(gy) {
-  const th = Math.atan(groundD1(p.x));
+  const th = boardSlope(p.x);
   const diff = wrapAngle(p.angle - th);
   p.y = gy;
-  // Keep only the velocity component along the slope
+  // Split the velocity into the part along the slope and the impact into it
   const along = p.vx * Math.cos(th) + p.vy * Math.sin(th);
+  const impact = Math.max(0, -p.vx * Math.sin(th) + p.vy * Math.cos(th));
 
   if (Math.abs(diff) > CRASH_ANGLE) {
     crash(along);
@@ -411,7 +623,9 @@ function land(gy) {
   p.air = false;
   p.angle = th + diff;
   p.angVel = 0;
-  let v = along;
+  // Sloppy landings bleed some speed; clean ones keep all of it
+  const quality = Math.abs(diff) / CRASH_ANGLE;
+  let v = along * (1 - 0.2 * quality * quality);
   const flips = Math.round(Math.abs(p.rot) / TAU);
   const perfect = Math.abs(diff) < PERFECT_ANGLE;
   if (flips > 0) {
@@ -420,10 +634,14 @@ function land(gy) {
     const pts = 100 * flips + (perfect ? 50 : 0);
     bonus += pts;
     const name = flips > 1 ? flips + 'x Backflip' : 'Backflip';
-    toast(name + (perfect ? ' \u00b7 Perfect' : '') + '  +' + pts);
+    toast(name + (perfect ? ' ' + DOT + ' Perfect' : '') + '  +' + pts);
   }
+  if (perfect && p.airT > 0.35) rings.push({ x: p.x, y: p.y, t: 0 });
   p.v = clamp(v, MIN_SPEED, MAX_SPEED);
-  burst(10, 0.8);
+  // Knees absorb the impact, and the camera feels it a little
+  p.squash = clamp(impact / 700, 0.25, 1);
+  addShake(Math.min(6, impact / 160));
+  burst(Math.round(8 + impact / 80), 0.8);
 }
 
 function crash(along) {
@@ -432,6 +650,8 @@ function crash(along) {
   p.crashT = 0;
   p.v = Math.max(0, along);
   p.boost = 0;
+  $('hud').hidden = true;
+  addShake(10);
   burst(26, 1.4);
 }
 
@@ -442,14 +662,27 @@ function stepCrash(dt) {
   p.x += p.v * Math.cos(th) * dt;
   p.y = groundY(p.x);
   // Tumble onto the back
-  p.angle += wrapAngle(th - 1.45 - p.angle) * Math.min(1, dt * 8);
+  p.angle = lerpAngle(p.angle, th - 1.45, smoothing(8, dt));
   if (p.crashT > 0.6 && $('over').hidden) showGameOver();
+}
+
+function addShake(amount) {
+  if (!reducedMotion) cam.shake = Math.max(cam.shake, amount);
+}
+
+// ---------- Trail: the carve line the board leaves in the snow ----------
+function addTrailPoint() {
+  const tx = p.x - Math.cos(p.angle) * 14;
+  const lastPt = trail[trail.length - 1];
+  if (lastPt && Math.abs(tx - lastPt.x) < 8) return;
+  trail.push({ x: tx, y: groundY(tx) + 1.5 });
+  if (trail.length > TRAIL_MAX) trail.shift();
 }
 
 // ---------- Particles ----------
 function emit(x, y, vx, vy, life, r, color) {
   if (particles.length > 320) particles.shift();
-  particles.push({ x, y, vx, vy, life, max: life, r, color });
+  particles.push({ x, y, px: x, py: y, vx, vy, life, max: life, r, color });
 }
 function spray(th) {
   const tx = p.x - Math.cos(p.angle) * 18;
@@ -470,38 +703,99 @@ function stepParticles(dt) {
     const q = particles[i];
     q.life -= dt;
     if (q.life <= 0) { particles.splice(i, 1); continue; }
+    q.px = q.x;
+    q.py = q.y;
+    q.vx *= Math.exp(-dt * 1.5); // light air drag on spray
     q.vy += 700 * dt;
     q.x += q.vx * dt;
     q.y += q.vy * dt;
   }
+  for (let i = rings.length - 1; i >= 0; i--) {
+    rings[i].t += dt;
+    if (rings[i].t > 0.5) rings.splice(i, 1);
+  }
 }
 
-// ---------- Main update ----------
-function neckWorld() {
-  const c = Math.cos(p.angle), s = Math.sin(p.angle);
-  const lx = 3, ly = -31;
-  return { x: p.x + c * lx - s * ly, y: p.y + s * lx + c * ly };
+// ---------- Scarf: a short verlet rope pinned at the rider's neck ----------
+function neckAt(x, y, angle, squash) {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  const lx = 3, ly = -31 + squash * 7;
+  return { x: x + c * lx - s * ly, y: y + s * lx + c * ly };
+}
+function initScarf() {
+  const n = neckAt(p.x, p.y, p.angle, 0);
+  scarf.length = 0;
+  for (let i = 0; i < SCARF_POINTS; i++) {
+    const x = n.x - i * 5;
+    scarf.push({ x, y: n.y, ox: x, oy: n.y, px: x, py: n.y });
+  }
+}
+function stepScarf(dt) {
+  const n = neckAt(p.x, p.y, p.angle, p.squash);
+  for (const s of scarf) { s.px = s.x; s.py = s.y; }
+  scarf[0].x = n.x;
+  scarf[0].y = n.y;
+  // Integrate: strong damping acts as air drag, so the scarf streams behind the rider
+  for (let i = 1; i < scarf.length; i++) {
+    const s = scarf[i];
+    const vx = (s.x - s.ox) * 0.96;
+    const vy = (s.y - s.oy) * 0.96;
+    s.ox = s.x;
+    s.oy = s.y;
+    s.x += vx;
+    s.y += vy + 400 * dt * dt + Math.sin(time * 22 + i * 0.9) * 0.18 * (i / scarf.length);
+  }
+  // Keep segment lengths fixed; the neck point is pinned
+  const seg = p.boost > 0 ? 7 : 5.5;
+  for (let iter = 0; iter < 4; iter++) {
+    for (let i = 1; i < scarf.length; i++) {
+      const a = scarf[i - 1], b = scarf[i];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.hypot(dx, dy) || 1e-6;
+      const k = (d - seg) / d;
+      if (i === 1) {
+        b.x -= dx * k;
+        b.y -= dy * k;
+      } else {
+        a.x += dx * k * 0.5;
+        a.y += dy * k * 0.5;
+        b.x -= dx * k * 0.5;
+        b.y -= dy * k * 0.5;
+      }
+    }
+  }
 }
 
+// ---------- Main update (fixed timestep) ----------
 function update(dt) {
   time += dt;
   if (input.down) input.age += dt;
+
+  // Remember the previous state so rendering can interpolate between steps
+  p.px = p.x; p.py = p.y; p.pa = p.angle; p.ps = p.squash;
+  cam.px = cam.x; cam.py = cam.y;
 
   if (state === 'playing') {
     if (p.air) stepAir(dt); else stepGround(dt);
   } else if (state === 'crashed') {
     stepCrash(dt);
   }
+  p.squash = lerp(p.squash, 0, smoothing(9, dt));
   stepParticles(dt);
+  stepScarf(dt);
 
-  // Smooth camera that keeps the rider on the left third of the screen
-  cam.x += (p.x - viewW / 3 - cam.x) * (1 - Math.exp(-dt * 12));
-  cam.y += (camTargetY() - cam.y) * (1 - Math.exp(-dt * 4));
+  // Camera: pull back gently with speed, then lerp toward the target with frame-rate independent smoothing
+  const speed = p.air ? Math.hypot(p.vx, p.vy) : p.v;
+  const zoomTarget = 1 - ZOOM_OUT * clamp((speed - 400) / 1100, 0, 1);
+  cam.zoom = lerp(cam.zoom, zoomTarget, smoothing(1.5, dt));
+  applyZoom();
+  cam.vel = lerp(cam.vel, (p.x - p.px) / dt, smoothing(3, dt));
+  cam.x = lerp(cam.x, camTargetX(), smoothing(CAM_FOLLOW_X, dt));
+  cam.y = lerp(cam.y, camTargetY(), smoothing(CAM_FOLLOW_Y, dt));
+  cam.shake = lerp(cam.shake, 0, smoothing(10, dt));
 
-  // Scarf trail history
-  const n = neckWorld();
-  scarfHist.push(n);
-  if (scarfHist.length > 24) scarfHist.shift();
+  // Drop carve points that have scrolled off the left edge
+  while (trail.length && (trail[0] === null || trail[0].x < cam.x - 40)) trail.shift();
 }
 
 // ---------- HUD ----------
@@ -533,13 +827,24 @@ function showGameOver() {
   $('intro').hidden = true;
   $('over').hidden = false;
   $('panel').hidden = false;
-  $('hud').hidden = true;
 }
 
 // ---------- Rendering ----------
-function drawRange(color, factor, baseFrac, a1, a2, f1, f2, seed) {
+function seedFlakes() {
+  flakes.length = 0;
+  if (reducedMotion) return;
+  const count = clamp(Math.round((W * H) / 16000), 30, 110);
+  for (let i = 0; i < count; i++) {
+    flakes.push({
+      x: Math.random() * W, y: Math.random() * H,
+      r: 0.8 + Math.random() * 1.6, s: 18 + Math.random() * 48, z: 0.2 + Math.random() * 0.4
+    });
+  }
+}
+
+function drawRange(camX, color, factor, baseFrac, a1, a2, f1, f2, seed) {
   // Triangle waves give crisp flat-design peaks; factor sets parallax depth
-  const off = cam.x * scale * factor;
+  const off = camX * scale * factor;
   const base = H * baseFrac;
   ctx.fillStyle = color;
   ctx.beginPath();
@@ -553,10 +858,10 @@ function drawRange(color, factor, baseFrac, a1, a2, f1, f2, seed) {
   ctx.fill();
 }
 
-function groundPath(offset, x0, x1, bottom) {
+function groundPath(offset, x0, x1, bottom, stepSize) {
   ctx.beginPath();
   ctx.moveTo(x0, bottom);
-  for (let x = x0; x <= x1; x += 8) ctx.lineTo(x, groundY(x) + offset);
+  for (let x = x0; x <= x1; x += stepSize) ctx.lineTo(x, groundY(x) + offset);
   ctx.lineTo(x1, groundY(x1) + offset);
   ctx.lineTo(x1, bottom);
   ctx.closePath();
@@ -578,33 +883,66 @@ function drawPine(x, y, s) {
   }
 }
 
-function drawScarf() {
-  if (scarfHist.length < 2) return;
-  const n = scarfHist[scarfHist.length - 1];
-  const speed = Math.hypot(p.air ? p.vx : p.v, p.air ? p.vy : 0);
-  const dirX = p.air ? -p.vx / (speed || 1) : -Math.cos(p.angle);
-  const dirY = p.air ? -p.vy / (speed || 1) : -Math.sin(p.angle);
-  const len = p.boost > 0 ? 1.5 : 1;
+function drawTrail(tipX, tipY, onGround) {
+  // Carve line: a soft groove in the snow, broken wherever the rider was airborne
+  ctx.strokeStyle = C.carve;
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  let open = false;
+  for (const t of trail) {
+    if (t === null) { open = false; continue; }
+    if (open) ctx.lineTo(t.x, t.y); else { ctx.moveTo(t.x, t.y); open = true; }
+  }
+  // Connect the newest point to the board so the line never lags behind it
+  if (open && onGround) ctx.lineTo(tipX, groundY(tipX) + 1.5);
+  ctx.stroke();
+}
+
+function drawShadow(x, y) {
+  const gy = groundY(x);
+  const height = gy - y;
+  if (height < 2) return;
+  const k = clamp(1 - height / 420, 0.15, 1);
+  ctx.save();
+  ctx.translate(x, gy);
+  ctx.rotate(Math.atan(groundD1(x)));
+  ctx.fillStyle = 'rgba(29, 33, 64, ' + (0.18 * k).toFixed(3) + ')';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 24 * k, 4 * k, 0, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawScarf(neck, alpha) {
+  // Smooth curve through interpolated rope points, starting at the rendered neck
+  const pts = [neck];
+  for (let i = 1; i < scarf.length; i++) {
+    pts.push({ x: lerp(scarf[i].px, scarf[i].x, alpha), y: lerp(scarf[i].py, scarf[i].y, alpha) });
+  }
   ctx.strokeStyle = C.scarf;
   ctx.lineWidth = 4;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.beginPath();
-  ctx.moveTo(n.x, n.y);
-  for (let k = 1; k <= 5; k++) {
-    const h = scarfHist[Math.max(0, scarfHist.length - 1 - k * 4)];
-    const flutter = Math.sin(time * 18 + k * 1.3) * k * 0.9;
-    const x = n.x + (h.x - n.x) * 0.4 * len + dirX * k * 4 * len - dirY * flutter;
-    const y = n.y + (h.y - n.y) * 0.4 * len + dirY * k * 4 * len + dirX * flutter;
-    ctx.lineTo(x, y);
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i].x + pts[i + 1].x) / 2;
+    const my = (pts[i].y + pts[i + 1].y) / 2;
+    ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
   }
+  const lastPt = pts[pts.length - 1];
+  ctx.lineTo(lastPt.x, lastPt.y);
   ctx.stroke();
 }
 
-function drawRider() {
+function drawRider(x, y, angle, squash) {
+  // squash > 0 crouches (landing), squash < 0 stretches (take-off)
+  const dip = squash * 7;
   ctx.save();
-  ctx.translate(p.x, p.y);
-  ctx.rotate(p.angle);
+  ctx.translate(x, y);
+  ctx.rotate(angle);
   ctx.strokeStyle = C.ink;
   ctx.fillStyle = C.ink;
   ctx.lineCap = 'round';
@@ -616,25 +954,37 @@ function drawRider() {
   ctx.lineTo(16, -2);
   ctx.quadraticCurveTo(22, -2, 25, -6);
   ctx.stroke();
-  // Legs
-  ctx.lineWidth = 4;
+  // Legs bend at the knee as the rider crouches
+  const knee = -10 + dip * 0.5;
+  const hip = -16 + dip;
   ctx.beginPath();
-  ctx.moveTo(-7, -4); ctx.lineTo(-1, -16);
-  ctx.moveTo(7, -4); ctx.lineTo(2, -16);
+  ctx.moveTo(-7, -4); ctx.lineTo(-6 - dip * 0.4, knee); ctx.lineTo(-1, hip);
+  ctx.moveTo(7, -4); ctx.lineTo(7 + dip * 0.4, knee); ctx.lineTo(2, hip);
   ctx.stroke();
   // Torso
   ctx.lineWidth = 9;
   ctx.beginPath();
-  ctx.moveTo(1, -17); ctx.lineTo(3, -29);
+  ctx.moveTo(1, hip - 1); ctx.lineTo(3, -29 + dip);
   ctx.stroke();
   // Head
   ctx.beginPath();
-  ctx.arc(4, -38, 6.5, 0, TAU);
+  ctx.arc(4, -38 + dip, 6.5, 0, TAU);
   ctx.fill();
   ctx.restore();
 }
 
-function render() {
+// alpha: how far the render time sits between the last two physics steps (0..1)
+function render(alpha, frameDt) {
+  const camX = lerp(cam.px, cam.x, alpha);
+  const camY = lerp(cam.py, cam.y, alpha);
+  const rx = lerp(p.px, p.x, alpha);
+  const ry = lerp(p.py, p.y, alpha);
+  const ra = lerpAngle(p.pa, p.angle, alpha);
+  const rs = lerp(p.ps, p.squash, alpha);
+  // Smooth, low-frequency shake (no per-frame random jitter)
+  const shakeX = cam.shake * Math.sin(time * 61);
+  const shakeY = cam.shake * Math.sin(time * 47 + 1.3);
+
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   // Sky and sun
@@ -645,28 +995,32 @@ function render() {
   ctx.arc(W * 0.72, H * 0.3, Math.min(W, H) * 0.07, 0, TAU);
   ctx.fill();
 
-  // Two parallax mountain layers
-  drawRange(C.far, 0.06, 0.64, 0.24, 0.07, 1 / 520, 1 / 190, 0.3);
-  drawRange(C.near, 0.16, 0.76, 0.16, 0.06, 1 / 360, 1 / 140, 1.7);
+  // Two parallax mountain layers with a warm haze between them and the slope
+  drawRange(camX, C.far, 0.06, 0.64, 0.24, 0.07, 1 / 520, 1 / 190, 0.3);
+  drawRange(camX, C.near, 0.16, 0.76, 0.16, 0.06, 1 / 360, 1 / 140, 1.7);
+  ctx.fillStyle = hazeGrad;
+  ctx.fillRect(0, H * 0.5, W, H * 0.5);
 
-  // Ambient snowfall in screen space
-  const camDx = (cam.x - cam.lastX) * scale;
-  cam.lastX = cam.x;
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  // Ambient snowfall in screen space, moved by real frame time so it is smooth at any refresh rate
+  const camDx = (camX - cam.renderX) * scale;
+  cam.renderX = camX;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+  ctx.beginPath();
   for (const f of flakes) {
-    f.y += f.s;
-    f.x -= camDx * f.z + 0.3;
-    if (f.y > H) { f.y = -4; f.x = Math.random() * W; }
+    f.y += f.s * frameDt;
+    f.x -= camDx * f.z + 18 * frameDt;
+    if (f.y > H + 4) { f.y = -4; f.x = Math.random() * W; }
     if (f.x < -4) f.x += W + 8;
     if (f.x > W + 4) f.x -= W + 8;
-    ctx.beginPath();
+    ctx.moveTo(f.x + f.r, f.y);
     ctx.arc(f.x, f.y, f.r, 0, TAU);
-    ctx.fill();
   }
+  ctx.fill();
 
   // World layer
-  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, -cam.x * scale * dpr, -cam.y * scale * dpr);
-  const x0 = cam.x - 20, x1 = cam.x + viewW + 20, bottom = cam.y + viewH + 60;
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale,
+    (-camX * scale + shakeX) * dpr, (-camY * scale + shakeY) * dpr);
+  const x0 = camX - 20, x1 = camX + viewW + 20, bottom = camY + viewH + 60;
 
   // Trees sit behind the snow surface so their trunks look planted
   const cell = 170;
@@ -676,51 +1030,68 @@ function render() {
       drawPine(tx, groundY(tx) + 8, 0.6 + hash(i + 77) * 0.9);
     }
   }
+  // Layered snow strata; sample density follows zoom so the edge stays smooth
+  const stepSize = Math.max(3, 6 / scale);
   ctx.fillStyle = C.snow;
-  groundPath(0, x0, x1, bottom);
+  groundPath(0, x0, x1, bottom, stepSize);
+  ctx.fillStyle = C.rim;
+  groundPath(16, x0, x1, bottom, stepSize);
   ctx.fillStyle = C.shade1;
-  groundPath(70, x0, x1, bottom);
+  groundPath(70, x0, x1, bottom, stepSize);
   ctx.fillStyle = C.shade2;
-  groundPath(180, x0, x1, bottom);
+  groundPath(180, x0, x1, bottom, stepSize);
+
+  const onGround = state === 'playing' && !p.air;
+  drawTrail(rx - Math.cos(ra) * 14, ry, onGround);
+  if (state === 'playing' && p.air) drawShadow(rx, ry);
+
+  for (const r of rings) {
+    const k = r.t / 0.5;
+    ctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.8 * (1 - k)).toFixed(3) + ')';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(r.x, r.y, 20 + k * 70, 5 + k * 16, Math.atan(groundD1(r.x)), 0, TAU);
+    ctx.stroke();
+  }
 
   for (const q of particles) {
     ctx.globalAlpha = q.life / q.max;
     ctx.fillStyle = q.color;
     ctx.beginPath();
-    ctx.arc(q.x, q.y, q.r, 0, TAU);
+    ctx.arc(lerp(q.px, q.x, alpha), lerp(q.py, q.y, alpha), q.r, 0, TAU);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
 
-  drawScarf();
-  drawRider();
+  drawScarf(neckAt(rx, ry, ra, rs), alpha);
+  drawRider(rx, ry, ra, rs);
 
   updateHud();
 }
 
-// ---------- Loop ----------
+// ---------- Loop: fixed-timestep physics with interpolated rendering ----------
+// Physics always advances in identical 1/120 s steps, so behaviour is the same at 60, 90, 144 or 240 Hz.
+// Rendering blends the last two steps, so motion is smooth even when steps and frames do not line up.
 let last = 0, acc = 0;
 function frame(t) {
-  const dt = Math.min(0.05, (t - last) / 1000 || 0);
+  const dt = Math.min(MAX_FRAME, Math.max(0, (t - last) / 1000));
   last = t;
   acc += dt;
   while (acc >= STEP) { update(STEP); acc -= STEP; }
-  render();
-  requestAnimationFrame(frame);
+  render(acc / STEP, dt);
+  rafId = requestAnimationFrame(frame);
+}
+function startLoop() {
+  // Reset the clock on (re)start so a pause never produces a time jump
+  rafId = requestAnimationFrame((t) => { last = t; acc = 0; frame(t); });
 }
 
 function boot(data) {
   best = Math.max(loadBest(), (data && data.best) || 0);
-  resize();
+  measure();
   reset();
-  const count = reducedMotion ? 0 : 60;
-  for (let i = 0; i < count; i++) {
-    flakes.push({
-      x: Math.random() * W, y: Math.random() * H,
-      r: 0.8 + Math.random() * 1.6, s: 0.3 + Math.random() * 0.8, z: 0.2 + Math.random() * 0.4
-    });
-  }
-  requestAnimationFrame((t) => { last = t; frame(t); });
+  seedFlakes();
+  startLoop();
 }
 
 window.claude?.hot?.snapshot?.(() => ({ best }));
