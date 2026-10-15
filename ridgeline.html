@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Ridgeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@300;500&display=swap">
+<style>
+  /* Layout: full-bleed canvas, thin type floating over the dusk sky. Single dusk look in every theme. */
+  :root {
+    --sky-top: #27315c;
+    --ink: #1d2140;
+    --text: #ffffff;
+    --muted: rgba(255, 255, 255, 0.74);
+    --accent: #e2574c;
+    --font: "Jost", "Futura", "Century Gothic", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    background: var(--sky-top);
+    color: var(--text);
+    font-family: var(--font);
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    cursor: pointer;
+  }
+  #hud {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 16px);
+    left: max(16px, env(safe-area-inset-left, 0px));
+    right: max(16px, env(safe-area-inset-right, 0px));
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    pointer-events: none;
+  }
+  .dist {
+    font-size: clamp(28px, 5vw, 44px);
+    font-weight: 300;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .sub {
+    margin-top: 6px;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  #toast {
+    position: fixed;
+    left: 50%;
+    top: 24%;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    font-size: clamp(16px, 3vw, 24px);
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    opacity: 0;
+    pointer-events: none;
+    text-shadow: 0 1px 12px rgba(29, 33, 64, 0.5);
+  }
+  #toast.show { animation: pop 1.4s ease-out forwards; }
+  @keyframes pop {
+    0% { opacity: 0; transform: translate(-50%, 8px); }
+    15% { opacity: 1; transform: translate(-50%, 0); }
+    70% { opacity: 1; }
+    100% { opacity: 0; transform: translate(-50%, -14px); }
+  }
+  #panel {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding-top: calc(env(safe-area-inset-top, 0px) + 13vh);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    pointer-events: none;
+    background: linear-gradient(rgba(29, 33, 64, 0.55), rgba(29, 33, 64, 0) 60%);
+  }
+  .card { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  #panel h1, #panel h2 {
+    margin: 0;
+    font-weight: 300;
+    text-transform: uppercase;
+    letter-spacing: 0.3em;
+    padding-left: 0.3em;
+    text-wrap: balance;
+  }
+  #panel h1 { font-size: clamp(38px, 9vw, 84px); }
+  #panel h2 { font-size: clamp(28px, 6vw, 52px); }
+  #panel p {
+    margin: 0;
+    max-width: 36ch;
+    line-height: 1.55;
+    font-size: 15px;
+    color: var(--muted);
+  }
+  .stats { display: flex; gap: 32px; font-variant-numeric: tabular-nums; }
+  .stat b { display: block; font-size: 30px; font-weight: 300; }
+  .stat span {
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .cta {
+    margin-top: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    animation: breathe 2.2s ease-in-out infinite;
+  }
+  @keyframes breathe { 50% { opacity: 0.45; } }
+  @media (prefers-reduced-motion: reduce) {
+    .cta { animation: none; }
+  }
+</style>
+
+</head>
+<body>
+<canvas id="game" aria-label="Ridgeline. Press Space or tap to jump, hold in the air to backflip."></canvas>
+
+<div id="hud" hidden>
+  <div>
+    <div class="dist" id="dist">0 m</div>
+    <div class="sub" id="score">Score 0</div>
+  </div>
+  <div class="sub" id="best">Best 0</div>
+</div>
+
+<div id="toast" aria-live="polite"></div>
+
+<div id="panel">
+  <div class="card" id="intro">
+    <h1>Ridgeline</h1>
+    <p>Tap, click or press Space to jump. Hold in the air to backflip. Land with your board along the slope.</p>
+    <div class="cta">Tap to ride</div>
+  </div>
+  <div class="card" id="over" hidden>
+    <h2>Wiped out</h2>
+    <div class="stats">
+      <div class="stat"><b id="oDist">0</b><span>Metres</span></div>
+      <div class="stat"><b id="oScore">0</b><span>Score</span></div>
+      <div class="stat"><b id="oBest">0</b><span>Best</span></div>
+    </div>
+    <div class="cta">Tap to ride again</div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ---------- Tuning constants ----------
+const G = 1500;              // gravity, world units per second squared
+const STEP = 1 / 120;        // fixed physics timestep
+const MIN_SPEED = 180;       // the rider never fully stalls on uphills
+const MAX_SPEED = 1500;
+const JUMP = 560;            // jump impulse along the slope normal
+const ROT_MAX = 7.5;         // max backflip spin, radians per second
+const CRASH_ANGLE = 0.7;     // landing tolerance against the slope, radians
+const PERFECT_ANGLE = 0.18;  // tighter tolerance for a perfect landing
+const PX_PER_M = 40;         // world units per metre shown in the HUD
+const TAU = Math.PI * 2;
+
+// Flat-design dusk palette used by the canvas
+const C = {
+  skyTop: '#27315c', skyMid: '#8c6f9f', skyLow: '#f2a58a', sun: '#ffe1c4',
+  far: '#9a8bbb', near: '#615a92', snow: '#eef0f8', shade1: '#dadcee', shade2: '#c4c7df',
+  tree: '#3a3f6b', ink: '#1d2140', scarf: '#e2574c', spray: '#ffffff', boost: '#ffd2a6'
+};
+
+// ---------- Terrain: a downward base slope plus layered sine waves ----------
+// Sines are continuous everywhere, so slope transitions are always seamless.
+const BASE_SLOPE = 0.22;
+const TERRAIN = [
+  { a: 140, f: 0.0021, p: 1.0 },
+  { a: 55, f: 0.0063, p: 2.1 },
+  { a: 10, f: 0.013, p: 0.4 }
+];
+function groundY(x) {
+  let y = BASE_SLOPE * x;
+  for (const t of TERRAIN) y += t.a * Math.sin(t.f * x + t.p);
+  return y;
+}
+function groundD1(x) {
+  let d = BASE_SLOPE;
+  for (const t of TERRAIN) d += t.a * t.f * Math.cos(t.f * x + t.p);
+  return d;
+}
+function groundD2(x) {
+  let d = 0;
+  for (const t of TERRAIN) d -= t.a * t.f * t.f * Math.sin(t.f * x + t.p);
+  return d;
+}
+
+// ---------- Helpers ----------
+function wrapAngle(a) {
+  a = (a + Math.PI) % TAU;
+  if (a < 0) a += TAU;
+  return a - Math.PI;
+}
+function hash(n) {
+  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function tri(u) {
+  const t = u - Math.floor(u);
+  return 1 - Math.abs(t * 2 - 1);
+}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+const $ = (id) => document.getElementById(id);
+
+// ---------- Canvas and viewport ----------
+const cv = $('game');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0, dpr = 1, scale = 1, viewW = 0, viewH = 0, skyGrad = null;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(H * dpr);
+  // Fit roughly 900 x 620 world units, but never zoom out so far that phones get a tiny rider
+  scale = Math.max(Math.min(H / 620, W / 900), Math.min(H / 620, 0.62));
+  viewW = W / scale;
+  viewH = H / scale;
+  skyGrad = ctx.createLinearGradient(0, 0, 0, H);
+  skyGrad.addColorStop(0, C.skyTop);
+  skyGrad.addColorStop(0.45, C.skyMid);
+  skyGrad.addColorStop(0.8, C.skyLow);
+}
+
+// ---------- Game state ----------
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let state = 'ready';         // 'ready' | 'playing' | 'crashed'
+let best = 0;
+let bonus = 0;
+let time = 0;
+const p = {};
+const cam = { x: 0, y: 0, lastX: 0 };
+const input = { down: false, age: 0, delay: 0 };
+const particles = [];
+const scarfHist = [];
+const flakes = [];
+
+function loadBest() {
+  try { return parseInt(localStorage.getItem('ridgeline-best') || '0', 10) || 0; } catch (e) { return 0; }
+}
+function saveBest() {
+  try { localStorage.setItem('ridgeline-best', String(best)); } catch (e) { /* storage unavailable */ }
+}
+
+function reset() {
+  Object.assign(p, {
+    x: 0, y: groundY(0), v: 0, vx: 0, vy: 0,
+    angle: Math.atan(groundD1(0)), angVel: 0,
+    air: false, airT: 0, rot: 0, boost: 0, crashT: 0
+  });
+  bonus = 0;
+  particles.length = 0;
+  scarfHist.length = 0;
+  cam.x = p.x - viewW / 3;
+  cam.y = camTargetY();
+  cam.lastX = cam.x;
+}
+
+function camTargetY() {
+  // Blend the rider height with the ground ahead so descents stay in view
+  return p.y * 0.6 + groundY(p.x + viewW * 0.35) * 0.4 - viewH * 0.5;
+}
+
+function start() {
+  state = 'playing';
+  p.v = 260;
+  $('panel').hidden = true;
+  $('hud').hidden = false;
+}
+
+// ---------- Input ----------
+function press() {
+  if (input.down) return;
+  input.down = true;
+  input.age = 0;
+  if (state === 'ready') {
+    start();
+    input.delay = Infinity; // the start tap should not spin the rider
+    return;
+  }
+  if (state === 'crashed') {
+    if (p.crashT > 0.7) {
+      reset();
+      start();
+      input.delay = Infinity;
+    }
+    return;
+  }
+  if (!p.air) {
+    jump();
+    input.delay = 0.14; // short grace so a quick tap jumps without flipping
+  } else {
+    input.delay = 0;    // a fresh press in the air spins immediately
+  }
+}
+function release() { input.down = false; }
+
+cv.addEventListener('pointerdown', (e) => { e.preventDefault(); press(); });
+window.addEventListener('pointerup', release);
+window.addEventListener('pointercancel', release);
+window.addEventListener('blur', release);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    if (!e.repeat) press();
+  }
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') release();
+});
+window.addEventListener('resize', resize);
+
+// ---------- Physics ----------
+function jump() {
+  const th = Math.atan(groundD1(p.x));
+  // Launch along the current velocity plus an impulse along the slope normal
+  p.vx = Math.max(120, p.v * Math.cos(th) + Math.sin(th) * JUMP);
+  p.vy = p.v * Math.sin(th) - Math.cos(th) * JUMP;
+  takeOff();
+  burst(8, 0.6);
+}
+
+function takeOff() {
+  p.air = true;
+  p.airT = 0;
+  p.rot = 0;
+  p.angVel = 0;
+}
+
+function stepGround(dt) {
+  const th = Math.atan(groundD1(p.x));
+  // Gravity along the slope, minus constant friction and quadratic air drag
+  let a = G * Math.sin(th) - 40 - 0.00035 * p.v * p.v;
+  if (p.boost > 0) { a += 600; p.boost -= dt; }
+  p.v = clamp(p.v + a * dt, MIN_SPEED, MAX_SPEED);
+
+  const vx = p.v * Math.cos(th);
+  // Leave the ground on crests where the slope falls away faster than gravity can follow
+  if (groundD2(p.x) * vx * vx > G * 1.05) {
+    p.vx = vx;
+    p.vy = p.v * Math.sin(th);
+    takeOff();
+    return;
+  }
+  p.x += vx * dt;
+  p.y = groundY(p.x);
+  p.angle += wrapAngle(th - p.angle) * Math.min(1, dt * 18);
+
+  if (Math.random() < p.v / 900) spray(th);
+}
+
+function stepAir(dt) {
+  p.airT += dt;
+  p.vy += G * dt;
+  p.x += p.vx * dt;
+  p.y += p.vy * dt;
+  if (p.boost > 0) p.boost -= dt;
+
+  // Holding spins backwards (counter-clockwise on screen); releasing lets the spin die out
+  const spinning = input.down && input.age >= input.delay;
+  if (spinning) p.angVel += (-ROT_MAX - p.angVel) * Math.min(1, dt * 9);
+  else p.angVel *= Math.exp(-dt * 5);
+  p.angle += p.angVel * dt;
+  p.rot += p.angVel * dt;
+
+  const gy = groundY(p.x);
+  if (p.y >= gy) land(gy);
+}
+
+function land(gy) {
+  const th = Math.atan(groundD1(p.x));
+  const diff = wrapAngle(p.angle - th);
+  p.y = gy;
+  // Keep only the velocity component along the slope
+  const along = p.vx * Math.cos(th) + p.vy * Math.sin(th);
+
+  if (Math.abs(diff) > CRASH_ANGLE) {
+    crash(along);
+    return;
+  }
+
+  p.air = false;
+  p.angle = th + diff;
+  p.angVel = 0;
+  let v = along;
+  const flips = Math.round(Math.abs(p.rot) / TAU);
+  const perfect = Math.abs(diff) < PERFECT_ANGLE;
+  if (flips > 0) {
+    v += 140 * flips + (perfect ? 90 : 0);
+    p.boost = Math.max(p.boost, 1 + 0.5 * flips);
+    const pts = 100 * flips + (perfect ? 50 : 0);
+    bonus += pts;
+    const name = flips > 1 ? flips + 'x Backflip' : 'Backflip';
+    toast(name + (perfect ? ' \u00b7 Perfect' : '') + '  +' + pts);
+  }
+  p.v = clamp(v, MIN_SPEED, MAX_SPEED);
+  burst(10, 0.8);
+}
+
+function crash(along) {
+  state = 'crashed';
+  p.air = false;
+  p.crashT = 0;
+  p.v = Math.max(0, along);
+  p.boost = 0;
+  burst(26, 1.4);
+}
+
+function stepCrash(dt) {
+  p.crashT += dt;
+  const th = Math.atan(groundD1(p.x));
+  p.v = Math.max(0, p.v - 1100 * dt);
+  p.x += p.v * Math.cos(th) * dt;
+  p.y = groundY(p.x);
+  // Tumble onto the back
+  p.angle += wrapAngle(th - 1.45 - p.angle) * Math.min(1, dt * 8);
+  if (p.crashT > 0.6 && $('over').hidden) showGameOver();
+}
+
+// ---------- Particles ----------
+function emit(x, y, vx, vy, life, r, color) {
+  if (particles.length > 320) particles.shift();
+  particles.push({ x, y, vx, vy, life, max: life, r, color });
+}
+function spray(th) {
+  const tx = p.x - Math.cos(p.angle) * 18;
+  const ty = p.y - Math.sin(p.angle) * 18;
+  const color = p.boost > 0 ? C.boost : C.spray;
+  emit(tx, ty, -p.v * 0.12 * Math.cos(th) + (Math.random() - 0.5) * 60,
+       -100 - Math.random() * 140, 0.45 + Math.random() * 0.3, 2 + Math.random() * 2.5, color);
+}
+function burst(n, power) {
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI * Math.random();
+    const s = (80 + Math.random() * 220) * power;
+    emit(p.x, p.y, Math.cos(a) * s, Math.sin(a) * s, 0.4 + Math.random() * 0.5, 2 + Math.random() * 3, C.spray);
+  }
+}
+function stepParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const q = particles[i];
+    q.life -= dt;
+    if (q.life <= 0) { particles.splice(i, 1); continue; }
+    q.vy += 700 * dt;
+    q.x += q.vx * dt;
+    q.y += q.vy * dt;
+  }
+}
+
+// ---------- Main update ----------
+function neckWorld() {
+  const c = Math.cos(p.angle), s = Math.sin(p.angle);
+  const lx = 3, ly = -31;
+  return { x: p.x + c * lx - s * ly, y: p.y + s * lx + c * ly };
+}
+
+function update(dt) {
+  time += dt;
+  if (input.down) input.age += dt;
+
+  if (state === 'playing') {
+    if (p.air) stepAir(dt); else stepGround(dt);
+  } else if (state === 'crashed') {
+    stepCrash(dt);
+  }
+  stepParticles(dt);
+
+  // Smooth camera that keeps the rider on the left third of the screen
+  cam.x += (p.x - viewW / 3 - cam.x) * (1 - Math.exp(-dt * 12));
+  cam.y += (camTargetY() - cam.y) * (1 - Math.exp(-dt * 4));
+
+  // Scarf trail history
+  const n = neckWorld();
+  scarfHist.push(n);
+  if (scarfHist.length > 24) scarfHist.shift();
+}
+
+// ---------- HUD ----------
+let lastHud = '';
+function distance() { return Math.max(0, Math.floor(p.x / PX_PER_M)); }
+function score() { return distance() + bonus; }
+function updateHud() {
+  const d = distance(), s = score();
+  const key = d + '|' + s + '|' + best;
+  if (key === lastHud) return;
+  lastHud = key;
+  $('dist').textContent = d.toLocaleString('en-US') + ' m';
+  $('score').textContent = 'Score ' + s.toLocaleString('en-US');
+  $('best').textContent = 'Best ' + best.toLocaleString('en-US');
+}
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.remove('show');
+  void el.offsetWidth; // restart the CSS animation
+  el.classList.add('show');
+}
+function showGameOver() {
+  const s = score();
+  if (s > best) { best = s; saveBest(); }
+  $('oDist').textContent = distance().toLocaleString('en-US');
+  $('oScore').textContent = s.toLocaleString('en-US');
+  $('oBest').textContent = best.toLocaleString('en-US');
+  $('intro').hidden = true;
+  $('over').hidden = false;
+  $('panel').hidden = false;
+  $('hud').hidden = true;
+}
+
+// ---------- Rendering ----------
+function drawRange(color, factor, baseFrac, a1, a2, f1, f2, seed) {
+  // Triangle waves give crisp flat-design peaks; factor sets parallax depth
+  const off = cam.x * scale * factor;
+  const base = H * baseFrac;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let sx = 0; sx <= W + 4; sx += 4) {
+    const u = sx + off;
+    ctx.lineTo(sx, base - H * (a1 * tri(u * f1 + seed) + a2 * tri(u * f2 + seed * 2.3)));
+  }
+  ctx.lineTo(W + 4, H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function groundPath(offset, x0, x1, bottom) {
+  ctx.beginPath();
+  ctx.moveTo(x0, bottom);
+  for (let x = x0; x <= x1; x += 8) ctx.lineTo(x, groundY(x) + offset);
+  ctx.lineTo(x1, groundY(x1) + offset);
+  ctx.lineTo(x1, bottom);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawPine(x, y, s) {
+  ctx.fillStyle = C.tree;
+  ctx.fillRect(x - 2.5 * s, y - 10 * s, 5 * s, 12 * s);
+  for (let k = 0; k < 3; k++) {
+    const w = 24 * s * (1 - k * 0.24);
+    const by = y - 8 * s - k * 17 * s;
+    ctx.beginPath();
+    ctx.moveTo(x - w, by);
+    ctx.lineTo(x + w, by);
+    ctx.lineTo(x, by - 30 * s);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+function drawScarf() {
+  if (scarfHist.length < 2) return;
+  const n = scarfHist[scarfHist.length - 1];
+  const speed = Math.hypot(p.air ? p.vx : p.v, p.air ? p.vy : 0);
+  const dirX = p.air ? -p.vx / (speed || 1) : -Math.cos(p.angle);
+  const dirY = p.air ? -p.vy / (speed || 1) : -Math.sin(p.angle);
+  const len = p.boost > 0 ? 1.5 : 1;
+  ctx.strokeStyle = C.scarf;
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(n.x, n.y);
+  for (let k = 1; k <= 5; k++) {
+    const h = scarfHist[Math.max(0, scarfHist.length - 1 - k * 4)];
+    const flutter = Math.sin(time * 18 + k * 1.3) * k * 0.9;
+    const x = n.x + (h.x - n.x) * 0.4 * len + dirX * k * 4 * len - dirY * flutter;
+    const y = n.y + (h.y - n.y) * 0.4 * len + dirY * k * 4 * len + dirX * flutter;
+    ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawRider() {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(p.angle);
+  ctx.strokeStyle = C.ink;
+  ctx.fillStyle = C.ink;
+  ctx.lineCap = 'round';
+  // Board with upturned tips
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-25, -6);
+  ctx.quadraticCurveTo(-22, -2, -16, -2);
+  ctx.lineTo(16, -2);
+  ctx.quadraticCurveTo(22, -2, 25, -6);
+  ctx.stroke();
+  // Legs
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-7, -4); ctx.lineTo(-1, -16);
+  ctx.moveTo(7, -4); ctx.lineTo(2, -16);
+  ctx.stroke();
+  // Torso
+  ctx.lineWidth = 9;
+  ctx.beginPath();
+  ctx.moveTo(1, -17); ctx.lineTo(3, -29);
+  ctx.stroke();
+  // Head
+  ctx.beginPath();
+  ctx.arc(4, -38, 6.5, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+function render() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // Sky and sun
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = C.sun;
+  ctx.beginPath();
+  ctx.arc(W * 0.72, H * 0.3, Math.min(W, H) * 0.07, 0, TAU);
+  ctx.fill();
+
+  // Two parallax mountain layers
+  drawRange(C.far, 0.06, 0.64, 0.24, 0.07, 1 / 520, 1 / 190, 0.3);
+  drawRange(C.near, 0.16, 0.76, 0.16, 0.06, 1 / 360, 1 / 140, 1.7);
+
+  // Ambient snowfall in screen space
+  const camDx = (cam.x - cam.lastX) * scale;
+  cam.lastX = cam.x;
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  for (const f of flakes) {
+    f.y += f.s;
+    f.x -= camDx * f.z + 0.3;
+    if (f.y > H) { f.y = -4; f.x = Math.random() * W; }
+    if (f.x < -4) f.x += W + 8;
+    if (f.x > W + 4) f.x -= W + 8;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.r, 0, TAU);
+    ctx.fill();
+  }
+
+  // World layer
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, -cam.x * scale * dpr, -cam.y * scale * dpr);
+  const x0 = cam.x - 20, x1 = cam.x + viewW + 20, bottom = cam.y + viewH + 60;
+
+  // Trees sit behind the snow surface so their trunks look planted
+  const cell = 170;
+  for (let i = Math.floor(x0 / cell) - 1; i <= Math.floor(x1 / cell) + 1; i++) {
+    if (hash(i) < 0.32) {
+      const tx = i * cell + hash(i * 1.37 + 9) * 120;
+      drawPine(tx, groundY(tx) + 8, 0.6 + hash(i + 77) * 0.9);
+    }
+  }
+  ctx.fillStyle = C.snow;
+  groundPath(0, x0, x1, bottom);
+  ctx.fillStyle = C.shade1;
+  groundPath(70, x0, x1, bottom);
+  ctx.fillStyle = C.shade2;
+  groundPath(180, x0, x1, bottom);
+
+  for (const q of particles) {
+    ctx.globalAlpha = q.life / q.max;
+    ctx.fillStyle = q.color;
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, q.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  drawScarf();
+  drawRider();
+
+  updateHud();
+}
+
+// ---------- Loop ----------
+let last = 0, acc = 0;
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000 || 0);
+  last = t;
+  acc += dt;
+  while (acc >= STEP) { update(STEP); acc -= STEP; }
+  render();
+  requestAnimationFrame(frame);
+}
+
+function boot(data) {
+  best = Math.max(loadBest(), (data && data.best) || 0);
+  resize();
+  reset();
+  const count = reducedMotion ? 0 : 60;
+  for (let i = 0; i < count; i++) {
+    flakes.push({
+      x: Math.random() * W, y: Math.random() * H,
+      r: 0.8 + Math.random() * 1.6, s: 0.3 + Math.random() * 0.8, z: 0.2 + Math.random() * 0.4
+    });
+  }
+  requestAnimationFrame((t) => { last = t; frame(t); });
+}
+
+window.claude?.hot?.snapshot?.(() => ({ best }));
+window.claude?.hot?.ready ? window.claude.hot.ready(boot) : boot(window.claude?.hot?.data ?? {});
+</script>
+</body>
+</html>
